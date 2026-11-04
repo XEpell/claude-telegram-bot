@@ -1,0 +1,25 @@
+# Секреты и личные данные — никогда не публикуются
+.env
+*.env
+.env.*
+access.json
+business.json
+business-contacts.json
+business-settings.json
+bot.pid
+history/
+inbox/
+approved/
+*.jsonl
+*.corrupt-*
+
+# Зависимости и сборка
+node_modules/
+bun.lockb
+dist/
+
+# Служебное
+.claude/
+*.log
+Thumbs.db
+desktop.ini

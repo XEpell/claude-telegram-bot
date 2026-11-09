@@ -18,6 +18,8 @@ you answer people: it replies on its own to simple small talk and asks you to ap
   (the counter resets when the owner writes themselves). Allowed contacts: no cap. Denied: ignored.
 - **Local chat history** per contact (JSONL + downloaded media).
 - **Deleted message alerts**: if a contact deletes a message, the owner gets its text and media.
+- **Google Calendar**: when a chat agrees on (or cancels) a meeting, the bot proposes adding/removing
+  the event — nothing changes until the owner taps "✅" (requires the Google Calendar connector in claude.ai).
 - **`/contacts` command** — allowed / pending / denied lists with buttons.
 - Status notices: 🟢 started / 🔴 stopped / ⚠️ not receiving messages.
 - Windows helpers: start Claude Code at login and on **Alt+Win+F5** (`hotkey/`).

@@ -25,3 +25,8 @@ Thumbs.db
 desktop.ini
 usage-stats.json
 usage-stats.csv
+business-circles.json
+reminders.json
+pending.json
+restart.request
+restart.quiet

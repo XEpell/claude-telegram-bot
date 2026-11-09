@@ -1,3 +1,4 @@
 {
-  "autoReplySimple": true
+  "autoReplySimple": true,
+  "memoryResetTokens": 120000
 }

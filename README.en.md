@@ -11,8 +11,12 @@ you answer people: it replies on its own to simple small talk and asks you to ap
 
 ## Features
 
-- **Auto-replies to small talk** ("hi", "how are you", "thanks") in the owner's tone,
-  using the last 30 messages of the chat as context.
+- **Auto-replies to small talk** ("hi", "how are you", "thanks") in the owner's tone.
+- **Circles** ("Friends", "Work", "Family"; a person can be in several) and short style notes:
+  the owner's general style, each circle's style and a card per contact. The bot writes them itself
+  (one chat at a time, when chats are quiet); the owner can view and edit them via `/circles` and `/contacts`.
+  A reply uses these notes plus only the last 10 messages — no re-reading of whole histories; if the contact
+  refers to something older, the bot searches that one chat.
 - **Everything else** goes to the owner as a draft with "✅ Send / ❌ Don't send" buttons.
 - **New contacts**: the bot asks the owner "Allow / Deny". Until decided, at most 5 auto-replies
   (the counter resets when the owner writes themselves). Allowed contacts: no cap. Denied: ignored.
@@ -20,7 +24,12 @@ you answer people: it replies on its own to simple small talk and asks you to ap
 - **Deleted message alerts**: if a contact deletes a message, the owner gets its text and media.
 - **Google Calendar**: when a chat agrees on (or cancels) a meeting, the bot proposes adding/removing
   the event — nothing changes until the owner taps "✅" (requires the Google Calendar connector in claude.ai).
-- **`/contacts` command** — allowed / pending / denied lists with buttons.
+- **`/contacts` command** — contact list; tap a person to see their card, circles and status.
+- **Reminders** — tell the bot "remind me tomorrow at 10 to call the bank"; `/reminders` lists them.
+  Stored on disk, so they survive restarts; so do pending drafts and calendar proposals.
+- **Automatic memory reset**: when the Claude Code context grows (~120k tokens by default), the bot restarts
+  the session at a quiet moment (`hotkey/run-bot.ps1`), so each message doesn't drag the whole past along.
+  Threshold: `memoryResetTokens` in `business-settings.json` (0 = off).
 - **`/stats` command** — tokens used by the bot's session today, over 7 days and per day.
   Read from Claude Code transcripts and accumulated in `usage-stats.json` / `usage-stats.csv`
   (kept even after Claude Code deletes old transcripts). Default launch folder is `~/claude-telegram`;

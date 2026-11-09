@@ -83,8 +83,11 @@ function Start-ClaudeBot([bool]$quiet) {
             return
         }
         New-Item -ItemType Directory -Force $WorkDir | Out-Null
-        $cmd = "Set-Location '$WorkDir'; & '$ClaudeExe' $ClaudeArgs"
-        Start-Process powershell.exe -WorkingDirectory $WorkDir -ArgumentList @('-NoExit', '-Command', $cmd)
+        # run-bot.ps1 перезапускает Claude Code, когда бот очищает память сессии.
+        $runBot = Join-Path $PSScriptRoot 'run-bot.ps1'
+        Start-Process powershell.exe -WorkingDirectory $WorkDir -ArgumentList @(
+            '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', "`"$runBot`"",
+            '-WorkDir', "`"$WorkDir`"", '-ClaudeExe', "`"$ClaudeExe`"")
     } catch {
         Show-Note "Не удалось запустить Claude Code: $_"
     }

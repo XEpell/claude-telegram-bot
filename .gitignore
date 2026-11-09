@@ -23,3 +23,5 @@ dist/
 *.log
 Thumbs.db
 desktop.ini
+usage-stats.json
+usage-stats.csv

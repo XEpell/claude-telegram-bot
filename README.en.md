@@ -21,6 +21,10 @@ you answer people: it replies on its own to simple small talk and asks you to ap
 - **Google Calendar**: when a chat agrees on (or cancels) a meeting, the bot proposes adding/removing
   the event — nothing changes until the owner taps "✅" (requires the Google Calendar connector in claude.ai).
 - **`/contacts` command** — allowed / pending / denied lists with buttons.
+- **`/stats` command** — tokens used by the bot's session today, over 7 days and per day.
+  Read from Claude Code transcripts and accumulated in `usage-stats.json` / `usage-stats.csv`
+  (kept even after Claude Code deletes old transcripts). Default launch folder is `~/claude-telegram`;
+  set another one via `"usageDir"` in `business-settings.json`.
 - Status notices: 🟢 started / 🔴 stopped / ⚠️ not receiving messages.
 - Windows helpers: start Claude Code at login and on **Alt+Win+F5** (`hotkey/`).
 

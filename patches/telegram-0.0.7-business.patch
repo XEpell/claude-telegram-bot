@@ -707,7 +707,7 @@
  }
  process.stdin.on('end', shutdown)
  process.stdin.on('close', shutdown)
-@@ -732,11 +1345,202 @@
+@@ -732,11 +1345,395 @@
    await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
  })
  
@@ -753,6 +753,183 @@
 +  await ctx.reply(text, { reply_markup: kb })
 +})
 +
++// [custom] Token usage of the bot's Claude Code session. Claude Code writes a
++// transcript per session to ~/.claude/projects/<encoded folder>/*.jsonl, with
++// `usage` on every model response. We sum it per local day and keep the totals
++// in usage-stats.json (+ a CSV copy), so the history survives even after
++// Claude Code cleans up old transcripts. The folder is the one Claude Code is
++// started in (hotkey launcher: ~/claude-telegram); override with
++// "usageDir" in business-settings.json.
++type Tok = { input: number; output: number; cacheWrite: number; cacheRead: number; requests: number }
++type UsageStore = { version: 1; updatedAt: string; days: Record<string, Record<string, Tok>> }
++const USAGE_FILE = join(STATE_DIR, 'usage-stats.json')
++const USAGE_CSV = join(STATE_DIR, 'usage-stats.csv')
++const usageFileCache = new Map<string, { mtime: number; size: number; perDay: Record<string, Tok> }>()
++
++function usageProjectDir(): string {
++  let dir = join(homedir(), 'claude-telegram')
++  try {
++    const s = JSON.parse(readFileSync(BIZ_SETTINGS_FILE, 'utf8'))
++    if (typeof s?.usageDir === 'string' && s.usageDir.trim()) dir = s.usageDir.trim()
++  } catch {}
++  return join(homedir(), '.claude', 'projects', dir.replace(/[^A-Za-z0-9]/g, '-'))
++}
++
++const zeroTok = (): Tok => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, requests: 0 })
++const tokTotal = (t: Tok) => t.input + t.output + t.cacheWrite + t.cacheRead
++function addTok(a: Tok, b: Tok): Tok {
++  return { input: a.input + b.input, output: a.output + b.output, cacheWrite: a.cacheWrite + b.cacheWrite, cacheRead: a.cacheRead + b.cacheRead, requests: a.requests + b.requests }
++}
++function localDay(d: Date): string {
++  const p = (n: number) => String(n).padStart(2, '0')
++  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
++}
++
++function listTranscripts(dir: string, rel = ''): string[] {
++  const out: string[] = []
++  let entries: import('fs').Dirent[] = []
++  try { entries = readdirSync(join(dir, rel), { withFileTypes: true }) } catch { return out }
++  for (const e of entries) {
++    const r = rel ? join(rel, e.name) : e.name
++    if (e.isDirectory() && e.name !== 'memory' && rel.split(sep).length < 3) out.push(...listTranscripts(dir, r))
++    else if (e.isFile() && e.name.endsWith('.jsonl')) out.push(r)
++  }
++  return out
++}
++
++function parseTranscript(path: string): Record<string, Tok> {
++  const perDay: Record<string, Tok> = {}
++  const seen = new Set<string>()
++  let raw = ''
++  try { raw = readFileSync(path, 'utf8') } catch { return perDay }
++  for (const line of raw.split('\n')) {
++    if (!line.includes('"usage"')) continue
++    let o: any
++    try { o = JSON.parse(line) } catch { continue }
++    const u = o?.message?.usage
++    if (o?.type !== 'assistant' || !u || typeof o.timestamp !== 'string') continue
++    if (o.message.model === '<synthetic>') continue
++    // One response is written as several lines (one per content block) with the same usage.
++    const key = `${o.message.id ?? ''}:${o.requestId ?? ''}`
++    if (key !== ':' && seen.has(key)) continue
++    seen.add(key)
++    const t = new Date(o.timestamp)
++    if (isNaN(t.getTime())) continue
++    const day = localDay(t)
++    const n = (v: unknown) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0)
++    perDay[day] = addTok(perDay[day] ?? zeroTok(), {
++      input: n(u.input_tokens), output: n(u.output_tokens),
++      cacheWrite: n(u.cache_creation_input_tokens), cacheRead: n(u.cache_read_input_tokens), requests: 1,
++    })
++  }
++  return perDay
++}
++
++function readUsageStore(): UsageStore {
++  try {
++    const s = JSON.parse(readFileSync(USAGE_FILE, 'utf8'))
++    if (s && s.version === 1 && s.days && typeof s.days === 'object') return s
++  } catch {}
++  return { version: 1, updatedAt: '', days: {} }
++}
++
++function writeUsageStore(store: UsageStore): void {
++  const write = (file: string, body: string) => {
++    const tmp = file + '.tmp'
++    try {
++      writeFileSync(tmp, body)
++      try { renameSync(tmp, file) } catch { writeFileSync(file, body); rmSync(tmp, { force: true }) }
++    } catch (err) {
++      process.stderr.write(`telegram channel: could not save ${file}: ${err}\n`)
++    }
++  }
++  write(USAGE_FILE, JSON.stringify(store, null, 1) + '\n')
++  const rows = ['date,total,input,output,cache_write,cache_read,requests']
++  for (const day of Object.keys(store.days).sort()) {
++    const t = Object.values(store.days[day]).reduce(addTok, zeroTok())
++    rows.push([day, tokTotal(t), t.input, t.output, t.cacheWrite, t.cacheRead, t.requests].join(','))
++  }
++  write(USAGE_CSV, rows.join('\n') + '\n')
++}
++
++// Rescan changed transcripts and merge them into the long-term store.
++function refreshUsage(): UsageStore {
++  const store = readUsageStore()
++  const dir = usageProjectDir()
++  for (const rel of listTranscripts(dir)) {
++    const path = join(dir, rel)
++    let st: import('fs').Stats
++    try { st = statSync(path) } catch { continue }
++    let c = usageFileCache.get(path)
++    if (!c || c.mtime !== st.mtimeMs || c.size !== st.size) {
++      c = { mtime: st.mtimeMs, size: st.size, perDay: parseTranscript(path) }
++      usageFileCache.set(path, c)
++    }
++    const key = rel.replace(/\\/g, '/').replace(/\.jsonl$/, '')
++    for (const [day, t] of Object.entries(c.perDay)) (store.days[day] ??= {})[key] = t
++  }
++  store.updatedAt = new Date().toISOString()
++  writeUsageStore(store)
++  return store
++}
++
++function fmtTok(n: number): string {
++  const f = (x: number) => x.toFixed(x >= 100 ? 0 : 1).replace('.', ',').replace(/,0$/, '')
++  if (n >= 1e9) return `${f(n / 1e9)} млрд`
++  if (n >= 1e6) return `${f(n / 1e6)} млн`
++  if (n >= 1e3) return `${f(n / 1e3)} тыс.`
++  return String(n)
++}
++
++function statsView(): { text: string; kb: InlineKeyboard } {
++  const store = refreshUsage()
++  const dayTotal = (day: string) => Object.values(store.days[day] ?? {}).reduce(addTok, zeroTok())
++  const now = new Date()
++  const last7: string[] = []
++  for (let i = 0; i < 7; i++) last7.push(localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)))
++  const today = dayTotal(last7[0])
++  const week = last7.map(dayTotal).reduce(addTok, zeroTok())
++  const allDays = Object.keys(store.days).sort()
++  const all = allDays.map(dayTotal).reduce(addTok, zeroTok())
++  const dayLabel = (day: string) => {
++    const [y, m, d] = day.split('-').map(Number)
++    return new Date(y, m - 1, d).toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'short' })
++  }
++  const block = (title: string, t: Tok) =>
++    `${title}: ${fmtTok(tokTotal(t))}\n` +
++    `   ✍️ ответы модели: ${fmtTok(t.output)}\n` +
++    `   📥 новый ввод: ${fmtTok(t.input + t.cacheWrite)}\n` +
++    `   ♻️ из кэша: ${fmtTok(t.cacheRead)}\n` +
++    `   🔁 запросов к модели: ${t.requests}`
++  const text =
++    `📊 Расход токенов бота\n\n` +
++    block(`Сегодня (${dayLabel(last7[0])})`, today) + '\n\n' +
++    block('За 7 дней', week) + '\n\n' +
++    `По дням:\n` +
++    last7.map(d => `• ${dayLabel(d)} — ${fmtTok(tokTotal(dayTotal(d)))}`).join('\n') + '\n\n' +
++    (allDays.length ? `Всего с ${dayLabel(allDays[0])}: ${fmtTok(tokTotal(all))}\n\n` : '') +
++    `«Из кэша» — повторно прочитанный контекст, он обходится намного дешевле нового ввода.\n` +
++    `Время: ${nowLabel()}`
++  return { text, kb: new InlineKeyboard().text('🔄 Обновить', 'stats:refresh') }
++}
++
++bot.command('stats', async ctx => {
++  const gated = dmCommandGate(ctx)
++  if (!gated || !gated.access.allowFrom.includes(gated.senderId)) return
++  let view: { text: string; kb: InlineKeyboard }
++  try { view = statsView() } catch (err) {
++    await ctx.reply(`Не удалось посчитать статистику: ${err instanceof Error ? err.message : err}`)
++    return
++  }
++  await ctx.reply(view.text, { reply_markup: view.kb })
++})
++
++// Keep the long-term file up to date even when /stats isn't used.
++if (POLL) {
++  setTimeout(() => { try { refreshUsage() } catch {} }, 60_000).unref()
++  setInterval(() => { try { refreshUsage() } catch {} }, 60 * 60_000).unref()
++}
++
  // Inline-button handler for permission requests. Callback data is
  // `perm:allow:<id>`, `perm:deny:<id>`, or `perm:more:<id>`.
  // Security mirrors the text-reply path: allowFrom must contain the sender.
@@ -761,8 +938,24 @@
 +
 +  // [custom] Business draft approval. Only the owner of that connection may
 +  // send — the button is the one and only path from Claude to a contact.
++  // [custom] /stats refresh button (owner-only).
++  if (data === 'stats:refresh') {
++    if (!loadAccess().allowFrom.includes(String(ctx.from.id))) {
++      await ctx.answerCallbackQuery({ text: 'Нет доступа.' }).catch(() => {})
++      return
++    }
++    try {
++      const { text, kb } = statsView()
++      await ctx.editMessageText(text, { reply_markup: kb }).catch(() => {})
++      await ctx.answerCallbackQuery({ text: 'Обновлено' }).catch(() => {})
++    } catch {
++      await ctx.answerCallbackQuery({ text: 'Не удалось посчитать.' }).catch(() => {})
++    }
++    return
++  }
++
 +  // [custom] Buttons under the /contacts list.
-+  const lm = /^bizl:(allow|deny|refresh):(\d{1,20})$/.exec(data)
++  const lm =/^bizl:(allow|deny|refresh):(\d{1,20})$/.exec(data)
 +  if (lm) {
 +    const [, action, contactId] = lm
 +    if (!loadAccess().allowFrom.includes(String(ctx.from.id))) {
@@ -910,7 +1103,7 @@
    const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(data)
    if (!m) {
      await ctx.answerCallbackQuery().catch(() => {})
-@@ -889,6 +1693,208 @@
+@@ -889,6 +1886,208 @@
    })
  })
  
@@ -1119,7 +1312,7 @@
  type AttachmentMeta = {
    kind: string
    file_id: string
-@@ -1003,22 +2009,70 @@
+@@ -1003,22 +2202,71 @@
  // returned, and polling stopped permanently while the process stayed alive
  // (MCP stdin keeps it running). Outbound tools kept working but the bot was
  // deaf to inbound messages until a full restart.
@@ -1179,6 +1372,7 @@
            void bot.api.setMyCommands(
              [
 +              { command: 'contacts', description: 'Собеседники: разрешённые и запрещённые' },
++              { command: 'stats', description: 'Расход токенов: сегодня и за неделю' },
                { command: 'start', description: 'Welcome and setup guide' },
                { command: 'help', description: 'What this bot can do' },
                { command: 'status', description: 'Check your pairing status' },
@@ -1190,7 +1384,7 @@
          },
        })
        return // bot.stop() was called — clean exit from the loop
-@@ -1027,14 +2081,10 @@
+@@ -1027,14 +2275,10 @@
        // bot.stop() mid-setup rejects with grammy's "Aborted delay" — expected, not an error.
        if (err instanceof Error && err.message === 'Aborted delay') return
        const is409 = err instanceof GrammyError && err.error_code === 409

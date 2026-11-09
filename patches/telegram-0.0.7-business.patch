@@ -1398,7 +1398,7 @@
    ],
  }))
  
-@@ -634,6 +1956,309 @@
+@@ -634,6 +1956,310 @@
          const id = typeof edited === 'object' ? edited.message_id : args.message_id
          return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
        }
@@ -1694,6 +1694,7 @@
 +        const keyboard = new InlineKeyboard()
 +          .text('✅ Отправить', `biz:send:${draftId}`)
 +          .text('❌ Не отправлять', `biz:skip:${draftId}`)
++          .row().text('↩️ Ответить с цитатой', `biz:quote:${draftId}`)
 +        try {
 +          await withRetry(() => bot.api.sendMessage(inb.ownerId, preview, { reply_markup: keyboard }))
 +        } catch (err) {
@@ -1708,7 +1709,7 @@
        default:
          return {
            content: [{ type: 'text', text: `unknown tool: ${req.params.name}` }],
-@@ -663,9 +2288,22 @@
+@@ -663,9 +2289,22 @@
      if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) rmSync(PID_FILE)
    } catch {}
    // bot.stop() signals the poll loop to end; the current getUpdates request
@@ -1734,7 +1735,7 @@
  }
  process.stdin.on('end', shutdown)
  process.stdin.on('close', shutdown)
-@@ -732,11 +2370,911 @@
+@@ -732,11 +2371,917 @@
    await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
  })
  
@@ -2593,10 +2594,13 @@
 +    return
 +  }
 +
-+  const bm = /^biz:(send|skip):([0-9a-f]{8})$/.exec(data)
++  const bm = /^biz:(send|skip|quote):([0-9a-f]{8})$/.exec(data)
 +  if (bm) {
 +    pruneBiz()
-+    const [, action, draftId] = bm
++    // [custom] "quote" = send the same draft as a Telegram reply to the contact's message.
++    const quote = bm[1] === 'quote'
++    const action = quote ? 'send' : bm[1]
++    const draftId = bm[2]
 +    const d = bizDrafts.get(draftId!)
 +    if (!d) {
 +      await ctx.answerCallbackQuery({ text: 'Черновик устарел.' }).catch(() => {})
@@ -2621,8 +2625,11 @@
 +    } else if (action === 'send') {
 +      let sent: Message | null = null
 +      try {
-+        sent = await bot.api.sendMessage(d.chatId, d.reply, { business_connection_id: d.connId })
-+        label = '✅ Отправлено'
++        sent = await bot.api.sendMessage(d.chatId, d.reply, {
++          business_connection_id: d.connId,
++          ...(quote ? { reply_parameters: { message_id: d.msgId, allow_sending_without_reply: true } } : {}),
++        })
++        label = quote ? '↩️ Отправлено с цитатой' : '✅ Отправлено'
 +      } catch (err) {
 +        if (!(err instanceof GrammyError)) {
 +          // Network trouble: keep the draft and its buttons so the owner can retry.
@@ -2646,7 +2653,7 @@
    const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(data)
    if (!m) {
      await ctx.answerCallbackQuery().catch(() => {})
-@@ -792,6 +3330,16 @@
+@@ -792,6 +3337,16 @@
  })
  
  bot.on('message:text', async ctx => {
@@ -2663,7 +2670,7 @@
    await handleInbound(ctx, ctx.message.text, undefined)
  })
  
-@@ -889,6 +3437,216 @@
+@@ -889,6 +3444,216 @@
    })
  })
  
@@ -2880,7 +2887,7 @@
  type AttachmentMeta = {
    kind: string
    file_id: string
-@@ -1003,22 +3761,90 @@
+@@ -1003,22 +3768,90 @@
  // returned, and polling stopped permanently while the process stayed alive
  // (MCP stdin keeps it running). Outbound tools kept working but the bot was
  // deaf to inbound messages until a full restart.
@@ -2971,7 +2978,7 @@
          },
        })
        return // bot.stop() was called — clean exit from the loop
-@@ -1027,14 +3853,10 @@
+@@ -1027,14 +3860,10 @@
        // bot.stop() mid-setup rejects with grammy's "Aborted delay" — expected, not an error.
        if (err instanceof Error && err.message === 'Aborted delay') return
        const is409 = err instanceof GrammyError && err.error_code === 409

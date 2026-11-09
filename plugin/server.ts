@@ -2248,6 +2248,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const keyboard = new InlineKeyboard()
           .text('✅ Отправить', `biz:send:${draftId}`)
           .text('❌ Не отправлять', `biz:skip:${draftId}`)
+          .row().text('↩️ Ответить с цитатой', `biz:quote:${draftId}`)
         try {
           await withRetry(() => bot.api.sendMessage(inb.ownerId, preview, { reply_markup: keyboard }))
         } catch (err) {
@@ -3225,10 +3226,13 @@ bot.on('callback_query:data', async ctx => {
     return
   }
 
-  const bm = /^biz:(send|skip):([0-9a-f]{8})$/.exec(data)
+  const bm = /^biz:(send|skip|quote):([0-9a-f]{8})$/.exec(data)
   if (bm) {
     pruneBiz()
-    const [, action, draftId] = bm
+    // [custom] "quote" = send the same draft as a Telegram reply to the contact's message.
+    const quote = bm[1] === 'quote'
+    const action = quote ? 'send' : bm[1]
+    const draftId = bm[2]
     const d = bizDrafts.get(draftId!)
     if (!d) {
       await ctx.answerCallbackQuery({ text: 'Черновик устарел.' }).catch(() => {})
@@ -3253,8 +3257,11 @@ bot.on('callback_query:data', async ctx => {
     } else if (action === 'send') {
       let sent: Message | null = null
       try {
-        sent = await bot.api.sendMessage(d.chatId, d.reply, { business_connection_id: d.connId })
-        label = '✅ Отправлено'
+        sent = await bot.api.sendMessage(d.chatId, d.reply, {
+          business_connection_id: d.connId,
+          ...(quote ? { reply_parameters: { message_id: d.msgId, allow_sending_without_reply: true } } : {}),
+        })
+        label = quote ? '↩️ Отправлено с цитатой' : '✅ Отправлено'
       } catch (err) {
         if (!(err instanceof GrammyError)) {
           // Network trouble: keep the draft and its buttons so the owner can retry.

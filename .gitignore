@@ -30,3 +30,5 @@ reminders.json
 pending.json
 restart.request
 restart.quiet
+channels.json
+pending-channels.json

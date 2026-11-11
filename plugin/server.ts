@@ -3675,7 +3675,10 @@ bot.on('business_message', async ctx => {
   if (entry.status === 'pending' && (!entry.askedAt || Date.now() - entry.askedAt > BIZ_TTL_MS)) {
     const who = contactUsername ? `${contactName} (@${contactUsername})` : contactName
     const kb = new InlineKeyboard()
-    for (const [cid, c] of Object.entries(readCircles().circles).slice(0, 6)) kb.text(`✅ ${c.emoji} ${c.name}`, `bizc:allow:${chatId}:${cid}`)
+    Object.entries(readCircles().circles).slice(0, 9).forEach(([cid, c], i) => {
+      kb.text(`✅ ${c.emoji} ${c.name}`, `bizc:allow:${chatId}:${cid}`)
+      if (i % 3 === 2) kb.row() // three circles per row
+    })
     nextRow(kb)
       .text('✅ Разрешить без круга', `bizc:allow:${chatId}`)
       .text('❌ Запретить', `bizc:deny:${chatId}`)

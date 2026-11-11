@@ -2852,7 +2852,7 @@
      kind: 'video_note',
      file_id: vn.file_id,
      size: vn.file_size,
-@@ -889,6 +3598,224 @@
+@@ -889,6 +3598,227 @@
    })
  })
  
@@ -2933,7 +2933,10 @@
 +  if (entry.status === 'pending' && (!entry.askedAt || Date.now() - entry.askedAt > BIZ_TTL_MS)) {
 +    const who = contactUsername ? `${contactName} (@${contactUsername})` : contactName
 +    const kb = new InlineKeyboard()
-+    for (const [cid, c] of Object.entries(readCircles().circles).slice(0, 6)) kb.text(`✅ ${c.emoji} ${c.name}`, `bizc:allow:${chatId}:${cid}`)
++    Object.entries(readCircles().circles).slice(0, 9).forEach(([cid, c], i) => {
++      kb.text(`✅ ${c.emoji} ${c.name}`, `bizc:allow:${chatId}:${cid}`)
++      if (i % 3 === 2) kb.row() // three circles per row
++    })
 +    nextRow(kb)
 +      .text('✅ Разрешить без круга', `bizc:allow:${chatId}`)
 +      .text('❌ Запретить', `bizc:deny:${chatId}`)
@@ -3077,7 +3080,7 @@
  type AttachmentMeta = {
    kind: string
    file_id: string
-@@ -1003,22 +3930,90 @@
+@@ -1003,22 +3933,90 @@
  // returned, and polling stopped permanently while the process stayed alive
  // (MCP stdin keeps it running). Outbound tools kept working but the bot was
  // deaf to inbound messages until a full restart.
@@ -3168,7 +3171,7 @@
          },
        })
        return // bot.stop() was called — clean exit from the loop
-@@ -1027,14 +4022,10 @@
+@@ -1027,14 +4025,10 @@
        // bot.stop() mid-setup rejects with grammy's "Aborted delay" — expected, not an error.
        if (err instanceof Error && err.message === 'Aborted delay') return
        const is409 = err instanceof GrammyError && err.error_code === 409

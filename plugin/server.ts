@@ -2933,6 +2933,66 @@ if (POLL) {
   setInterval(() => { try { refreshUsage() } catch {} }, 60 * 60_000).unref()
 }
 
+// [custom] history/_ЧАТЫ.txt — a readable table of contents for the chat files,
+// which are named by Telegram chat id (names change, ids don't). Rewritten by
+// the bot every 10 minutes; editing it changes nothing.
+const HISTORY_INDEX = join(HISTORY_DIR, '_ЧАТЫ.txt')
+
+function writeHistoryIndex(): void {
+  let files: string[] = []
+  try { files = readdirSync(HISTORY_DIR).filter(f => f.endsWith('.jsonl')) } catch { return }
+  const contacts = readContacts()
+  const circ = readCircles()
+  const chans = readChannels()
+  const statusLabel = { allowed: 'разрешён', pending: 'ждёт решения', denied: 'запрещён' } as const
+  const rows = files.map(f => {
+    const id = f.slice(0, -'.jsonl'.length)
+    const msgs = [...loadHist(id).values()]
+    const last = msgs.length ? msgs[msgs.length - 1]!.at : ''
+    const c = contacts[id]
+    const disc = chans.discussions[id]
+    let who: string, info: string
+    if (c) {
+      who = c.name + (c.username ? ` (@${c.username})` : '')
+      const circles = (c.circles ?? []).map(x => circ.circles[x] ? `${circ.circles[x]!.emoji} ${circ.circles[x]!.name}` : '').filter(Boolean).join(', ')
+      info = [statusLabel[c.status], c.archived ? 'в архиве' : '', circles].filter(Boolean).join(' · ')
+    } else if (disc) {
+      who = `Комментарии канала «${chans.channels[disc.channelId]?.title ?? disc.title}»`
+      info = 'чат комментариев'
+    } else {
+      who = msgs.find(m => m.dir === 'in' && m.name)?.name ?? 'неизвестно'
+      info = 'нет в списке собеседников'
+    }
+    return { file: f, who, info, count: msgs.filter(m => !m.deleted).length, last }
+  }).sort((a, b) => b.last.localeCompare(a.last))
+  const date = (iso: string) => (iso ? new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—')
+  const body =
+    `Оглавление истории переписки — бот обновляет этот файл сам (раз в 10 минут).\n` +
+    `Файлы чатов названы номером чата в Telegram: так история не теряется, если человек сменит имя.\n` +
+    `Вложения (фото, голосовые) лежат в папке media\\<номер чата>.\n` +
+    `Обновлено: ${nowLabel()} · чатов: ${rows.length}\n\n` +
+    rows.map(r =>
+      `${r.file}\n` +
+      `    ${r.who}\n` +
+      `    ${r.info}\n` +
+      `    сообщений: ${r.count} · последнее: ${date(r.last)}`).join('\n\n') + '\n'
+  try {
+    const next = '﻿' + body.replace(/\n/g, '\r\n') // BOM + CRLF: opens correctly in Notepad
+    let prev = ''
+    try { prev = readFileSync(HISTORY_INDEX, 'utf8') } catch {}
+    // Skip rewriting when only the "updated" line would change.
+    const strip = (s: string) => s.replace(/^.*Обновлено: .*$/m, '')
+    if (strip(prev) !== strip(next)) writeFileSync(HISTORY_INDEX, next)
+  } catch (err) {
+    process.stderr.write(`telegram channel: history index failed: ${err}\n`)
+  }
+}
+
+if (POLL) {
+  setTimeout(() => { try { writeHistoryIndex() } catch {} }, 30_000).unref()
+  setInterval(() => { try { writeHistoryIndex() } catch {} }, 10 * 60_000).unref()
+}
+
 // ---------------------------------------------------------------------------
 // [custom] Planned memory reset. The Claude Code session keeps everything since
 // it started in its context and re-reads it for every message, so cost grows

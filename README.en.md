@@ -40,8 +40,8 @@ you answer people: it replies on its own to simple small talk and asks you to ap
   goes out only after the "✅ Publish" button. Channels the bot was added to by anyone else are left immediately.
 - **News digest** (`/news`): once a day the bot reads new posts of public channels via their web preview
   `t.me/s/<channel>` (no need to join), and Claude sends a short summary without ads and duplicates.
-- **"🟢 Active / ⏸ Paused" button** under the input field in the bot chat: when paused the bot only records
-  history — no auto-replies, no drafts, no tokens.
+- **"🟢 Active / ⏸ Paused" button** under the input field in the bot chat: when paused the bot still sees
+  personal-chat messages but neither replies nor drafts (channel comments are not affected).
 - **`/stats` command** — tokens used by the bot's session today, over 7 days and per day.
   Read from Claude Code transcripts and accumulated in `usage-stats.json` / `usage-stats.csv`
   (kept even after Claude Code deletes old transcripts). Default launch folder is `~/claude-telegram`;

@@ -1097,6 +1097,38 @@ function bizAutoEnabled(): boolean {
   }
 }
 
+// [custom] Pause mode ("paused": true in business-settings.json), toggled by the
+// owner's persistent button. Paused: personal chats and channel comments are
+// still recorded (history, deletion alerts, new-contact prompts), but nothing
+// goes to Claude — no auto-replies, no drafts, no tokens.
+const PAUSE_ON_LABEL = '⏸ Бот на паузе'
+const PAUSE_OFF_LABEL = '🟢 Бот активен'
+
+function botPaused(): boolean {
+  try {
+    return JSON.parse(readFileSync(BIZ_SETTINGS_FILE, 'utf8')).paused === true
+  } catch {
+    return false
+  }
+}
+
+function setPaused(paused: boolean): void {
+  let s: Record<string, unknown> = {}
+  try { s = JSON.parse(readFileSync(BIZ_SETTINGS_FILE, 'utf8')) } catch {}
+  s.paused = paused
+  writeJsonSafe(BIZ_SETTINGS_FILE, s)
+}
+
+// The persistent keyboard under the input field: one button showing the mode.
+function modeKeyboard() {
+  return {
+    keyboard: [[{ text: botPaused() ? PAUSE_ON_LABEL : PAUSE_OFF_LABEL }]],
+    resize_keyboard: true,
+    is_persistent: true,
+    input_field_placeholder: botPaused() ? 'Бот на паузе — черновиков нет' : 'Бот активен',
+  }
+}
+
 // Returns null if the reply may be auto-sent, else the reason it may not.
 // Loop guard for every contact, approved or not: if the other side is itself
 // an auto-replier, two bots must not chat forever.
@@ -1548,7 +1580,7 @@ async function handleComment(m: Message, groupId: string, disc: DiscussionEntry,
   })
   if (fromOwner || fromBot || m.is_automatic_forward || !m.from || m.from.is_bot) return
   if (m.sender_chat) return // someone posting as another channel/group
-  if (!ch.replyComments) return
+  if (!ch.replyComments || botPaused()) return
   const uid = String(m.from.id)
   if (disc.ignored.includes(uid) || readContacts()[uid]?.status === 'denied') return
   if (text.startsWith('/')) return
@@ -2637,8 +2669,12 @@ let startedNotified = false
 function nowLabel(): string {
   return new Date().toLocaleString('ru-RU')
 }
-async function notifyOwners(text: string, silent = false): Promise<void> {
-  await Promise.all(loadAccess().allowFrom.map(id => withRetry(() => bot.api.sendMessage(id, text, silent ? { disable_notification: true } : undefined), 2).catch(() => {})))
+async function notifyOwners(text: string, silent = false, withModeButton = false): Promise<void> {
+  const opts = {
+    ...(silent ? { disable_notification: true } : {}),
+    ...(withModeButton ? { reply_markup: modeKeyboard() } : {}),
+  }
+  await Promise.all(loadAccess().allowFrom.map(id => withRetry(() => bot.api.sendMessage(id, text, opts), 2).catch(() => {})))
 }
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
@@ -3822,6 +3858,20 @@ bot.on('callback_query:data', async ctx => {
 })
 
 bot.on('message:text', async ctx => {
+  // [custom] The owner's mode button (persistent keyboard) — toggles pause.
+  const txt = ctx.message.text.trim()
+  if ((txt === PAUSE_ON_LABEL || txt === PAUSE_OFF_LABEL) && ctx.chat.type === 'private' &&
+      loadAccess().allowFrom.includes(String(ctx.from.id))) {
+    const paused = !botPaused()
+    setPaused(paused)
+    await ctx.reply(
+      paused
+        ? '⏸ Бот на паузе.\nВ личных чатах и комментариях канала он только записывает историю (и по-прежнему сообщает об удалённых сообщениях и новых собеседниках): ни автоответов, ни черновиков, токены не тратятся.\nНажмите кнопку ещё раз, чтобы включить.'
+        : '🟢 Бот активен.\nОн снова отвечает на простые сообщения сам и присылает черновики на остальные. Сообщения, пришедшие во время паузы, он не обрабатывает.',
+      { reply_markup: modeKeyboard() },
+    ).catch(() => {})
+    return
+  }
   // [custom] Owner's answer to a "✏️ Изменить" prompt — handled here, not by Claude.
   const rt = ctx.message.reply_to_message
   if (rt && ctx.chat.type === 'private' && editPrompts.has(rt.message_id) &&
@@ -3834,7 +3884,7 @@ bot.on('message:text', async ctx => {
     }
     const result = applyEdit(rt.message_id, ctx.message.text)
     if (result) {
-      await ctx.reply(result).catch(() => {})
+      await ctx.reply(result, { reply_markup: modeKeyboard() }).catch(() => {}) // force_reply hid the mode button — bring it back
       return
     }
   }
@@ -4061,6 +4111,7 @@ bot.on('business_message', async ctx => {
   const history = historyContext(chatId, m.message_id, contactName, entry.card ? HISTORY_WITH_CARD : HISTORY_NO_CARD)
   const style = styleContext(chatId)
   recordMessage(chatId, m, 'in', contactName, text, voicePath)
+  if (botPaused()) return // [custom] pause: recorded, but no drafts / auto-replies / tokens
 
   const autoLeft = entry.status === 'allowed'
     ? 'unlimited'
@@ -4313,13 +4364,18 @@ bot.api.config.use(async (prev, method, payload, signal) => {
         rmSync(RESTART_QUIET, { force: true })
       } catch {}
       void (quiet
-        ? notifyOwners(`✅ Память очищена, бот снова на связи: ${nowLabel()}.`, true)
+        ? notifyOwners(`✅ Память очищена, бот снова на связи: ${nowLabel()}.`, true, true)
         : notifyOwners(
-          `🟢 Бот запущен: ${nowLabel()}.\nС этого момента сообщения в личных чатах обрабатываются.\n` +
+          `🟢 Бот запущен: ${nowLabel()}.\n` +
+          (botPaused()
+            ? `⏸ Режим: на паузе — сообщения в личных чатах только записываются, черновиков и автоответов нет.\n`
+            : `С этого момента сообщения в личных чатах обрабатываются.\n`) +
+          `Кнопка под полем ввода переключает режим «активен / на паузе».\n` +
           `/contacts — собеседники · /circles — круги · /channels — каналы · /news — сводка · /reminders — напоминания · /stats — токены` +
           (process.platform === 'win32' && !relaunchable
             ? `\n\nℹ️ Автоочистка памяти выключена: бот запущен не через Alt+Win+F5 / автозапуск новой версии.`
             : ''),
+          false, true,
         ))
       void checkReminders().catch(() => {}) // anything missed while the bot was off
       setTimeout(() => { try { runProfileTasks() } catch {} }, 3 * 60_000)

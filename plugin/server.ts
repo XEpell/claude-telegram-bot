@@ -655,6 +655,9 @@ type ContactEntry = {
   cardManual?: boolean
   cardAt?: number
   cardCount?: number // messages in history when the card was written
+  // [custom] Archived: hidden from /contacts, all data kept. Comes back on a new message.
+  archived?: boolean
+  archivedAt?: number
 }
 
 // The in-memory copy is the source of truth, so check-then-update sequences
@@ -1185,7 +1188,7 @@ function nextProfileTask(): ProfileTask | null {
   const cs = readCircles()
 
   for (const [id, c] of Object.entries(contacts)) {
-    if (c.status !== 'allowed' || c.cardManual || recentlyTried(`contact:${id}`)) continue
+    if (c.status !== 'allowed' || c.archived || c.cardManual || recentlyTried(`contact:${id}`)) continue
     const n = histCount(id)
     if (n >= CARD_MIN_MSGS && (!c.card || n - (c.cardCount ?? 0) >= CARD_EVERY)) return { kind: 'contact', id, at: now }
   }
@@ -2519,8 +2522,9 @@ function contactsView(): { text: string; kb: InlineKeyboard } {
   const cs = readContacts()
   const label = (c: ContactEntry) => (c.username ? `${c.name} (@${c.username})` : c.name)
   const short = (c: ContactEntry) => clip(c.name, 24)
-  const by = (s: ContactStatus) => Object.entries(cs).filter(([, c]) => c.status === s)
+  const by = (s: ContactStatus) => Object.entries(cs).filter(([, c]) => c.status === s && !c.archived)
   const allowed = by('allowed'), pending = by('pending'), denied = by('denied')
+  const archivedCount = Object.values(cs).filter(c => c.archived).length
 
   const circ = readCircles()
   const tags = (c: ContactEntry) => (c.circles ?? []).map(id => circ.circles[id]?.emoji).filter(Boolean).join('')
@@ -2545,7 +2549,32 @@ function contactsView(): { text: string; kb: InlineKeyboard } {
     kb.text(`${icon[c.status]} ${short(c)}${tags(c) ? ' ' + tags(c) : ''}`, `ct:open:${id}`)
     if (++n % 2 === 0) nextRow(kb)
   }
-  nextRow(kb).text('⭕ Круги', 'cr:list').text('🔄 Обновить', 'bizl:refresh:0')
+  nextRow(kb).text('⭕ Круги', 'cr:list').text(`📦 Архив (${archivedCount})`, 'ct:archive:0').text('🔄 Обновить', 'bizl:refresh:0')
+  return { text, kb }
+}
+
+// [custom] Archived contacts: hidden from the list, data kept, one tap to restore.
+function archiveView(): { text: string; kb: InlineKeyboard } {
+  const list = Object.entries(readContacts()).filter(([, c]) => c.archived)
+    .sort((a, b) => (b[1].archivedAt ?? 0) - (a[1].archivedAt ?? 0))
+  const kb = new InlineKeyboard()
+  let n = 0
+  for (const [id, c] of list.slice(0, 90)) {
+    kb.text(`👤 ${clip(c.name, 24)}`, `ct:open:${id}`)
+    if (++n % 2 === 0) nextRow(kb)
+  }
+  nextRow(kb).text('⬅️ К списку', 'bizl:refresh:0')
+  const text = clip(
+    `📦 Архив (${list.length})\n\n` +
+    (list.length
+      ? list.map(([, c]) => `• ${c.name}${c.username ? ` (@${c.username})` : ''}` +
+          (c.archivedAt ? ` — с ${new Date(c.archivedAt).toLocaleDateString('ru-RU')}` : '') +
+          (c.status === 'denied' ? ' ❌' : '')).join('\n') +
+        `\n\nИстория, карточка и круги сохранены. Нажмите на человека, чтобы посмотреть или вернуть его.\n` +
+        `Если человек из архива напишет снова, он вернётся в список и бот спросит вас о нём (запрещённых ❌ бот по-прежнему игнорирует).`
+      : 'Пусто. Убрать человека из списка: /contacts → человек → «📦 В архив».'),
+    4000,
+  )
   return { text, kb }
 }
 
@@ -2558,6 +2587,7 @@ function contactView(id: string): { text: string; kb: InlineKeyboard } | null {
   const inCircles = (c.circles ?? []).filter(cid => circ.circles[cid])
   const text = clip(
     `👤 ${c.name}${c.username ? ` (@${c.username})` : ''}\n` +
+    (c.archived ? `📦 В архиве${c.archivedAt ? ` с ${new Date(c.archivedAt).toLocaleDateString('ru-RU')}` : ''}\n` : '') +
     `Статус: ${statusText}\n` +
     `Круги: ${inCircles.length ? inCircles.map(cid => circleLabel(cid, circ)).join(', ') : '—'}\n` +
     `Сообщений в истории: ${histCount(id)}\n\n` +
@@ -2578,7 +2608,8 @@ function contactView(id: string): { text: string; kb: InlineKeyboard } | null {
   if (c.status !== 'allowed') kb.text('✅ Разрешить', `ct:st:${id}:allow`)
   if (c.status !== 'denied') kb.text('❌ Запретить', `ct:st:${id}:deny`)
   nextRow(kb).text('✏️ Изменить карточку', `ct:edit:${id}`).text('🔄 Пересоставить', `ct:redo:${id}`)
-  nextRow(kb).text('⬅️ К списку', 'bizl:refresh:0')
+  nextRow(kb).text(c.archived ? '↩️ Вернуть из архива' : '📦 В архив', `ct:${c.archived ? 'unarch' : 'arch'}:${id}`)
+  nextRow(kb).text('⬅️ К списку', c.archived ? 'ct:archive:0' : 'bizl:refresh:0')
   return { text, kb }
 }
 
@@ -2587,7 +2618,7 @@ function circlesView(): { text: string; kb: InlineKeyboard } {
   const circ = readCircles()
   const contacts = Object.values(readContacts())
   const lines = Object.entries(circ.circles).map(([cid, c]) => {
-    const n = contacts.filter(x => x.status !== 'denied' && x.circles?.includes(cid)).length
+    const n = contacts.filter(x => x.status !== 'denied' && !x.archived && x.circles?.includes(cid)).length
     return `${c.emoji} ${c.name} — ${n} чел.\n   ${clip(c.style || 'стиль ещё не описан', 140)}`
   })
   const text = clip(
@@ -2609,7 +2640,7 @@ function circlesView(): { text: string; kb: InlineKeyboard } {
 function circleView(cid: string): { text: string; kb: InlineKeyboard } | null {
   const c = readCircles().circles[cid]
   if (!c) return null
-  const members = Object.entries(readContacts()).filter(([, x]) => x.status !== 'denied' && x.circles?.includes(cid))
+  const members = Object.entries(readContacts()).filter(([, x]) => x.status !== 'denied' && !x.archived && x.circles?.includes(cid))
   const text = clip(
     `${c.emoji} ${c.name}\n\n` +
     `Стиль${c.manual ? ' (написан вами)' : c.at ? ` (составлен ботом, ${new Date(c.at).toLocaleDateString('ru-RU')})` : ' (стартовый)'}:\n${c.style || '—'}\n\n` +
@@ -3184,11 +3215,24 @@ bot.on('callback_query:data', async ctx => {
       if (v) await ctx.editMessageText(v.text, { reply_markup: v.kb }).catch(() => {})
     }
     try {
+      if (area === 'ct' && act === 'archive') return await show(archiveView())
       if (area === 'ct' && a1) {
         const contacts = readContacts()
         const c = contacts[a1]
         if (!c) return await show(contactsView(), 'Контакт не найден')
         if (act === 'open') return await show(contactView(a1))
+        if (act === 'arch') {
+          c.archived = true
+          c.archivedAt = Date.now()
+          saveContacts(contacts)
+          return await show(contactsView(), `📦 ${c.name} в архиве — данные сохранены`)
+        }
+        if (act === 'unarch') {
+          delete c.archived
+          delete c.archivedAt
+          saveContacts(contacts)
+          return await show(contactView(a1), `↩️ ${c.name} снова в списке`)
+        }
         if (act === 'cir' && a2 && readCircles().circles[a2]) {
           const set = new Set(c.circles ?? [])
           const had = set.has(a2)
@@ -3661,6 +3705,15 @@ bot.on('business_message', async ctx => {
     entry = { status: 'pending', name: contactName, autoCount: 0 }
     contacts[chatId] = entry
   }
+  // [custom] Someone from the archive wrote again → back to the list, ask the owner.
+  const fromArchive = !!entry.archived
+  if (fromArchive) {
+    delete entry.archived
+    delete entry.archivedAt
+    entry.status = 'pending'
+    entry.autoCount = 0
+    delete entry.askedAt
+  }
   entry.name = contactName
   if (contactUsername) entry.username = contactUsername
   saveContacts(contacts)
@@ -3686,7 +3739,9 @@ bot.on('business_message', async ctx => {
     // askedAt is set only once the question really reached the owner.
     void withRetry(() => bot.api.sendMessage(
       conn.ownerId,
-      `👤 Новый собеседник: ${who}\nПишет: «${clip(text, 300)}»\n\n` +
+      (fromArchive
+        ? `📦 Снова пишет собеседник из архива: ${who}\n(история, карточка и круги сохранены)\nПишет: «${clip(text, 300)}»\n\n`
+        : `👤 Новый собеседник: ${who}\nПишет: «${clip(text, 300)}»\n\n`) +
       `Разрешить боту общаться с ним без ограничений? Кнопка с кругом сразу разрешит и добавит человека в круг — бот будет отвечать в стиле этого круга. ` +
       `Пока вы не решили, бот ответит ему сам не больше ${AUTO_LIMIT_UNAPPROVED} раз (счётчик сбрасывается, когда вы пишете ему сами). «Запретить» — бот перестанет ему отвечать.`,
       { reply_markup: kb },

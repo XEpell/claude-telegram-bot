@@ -25,6 +25,7 @@ you answer people: it replies on its own to simple small talk and asks you to ap
 - **Google Calendar**: when a chat agrees on (or cancels) a meeting, the bot proposes adding/removing
   the event — nothing changes until the owner taps "✅" (requires the Google Calendar connector in claude.ai).
 - **`/contacts` command** — contact list; tap a person to see their card, circles and status.
+  "📦 Archive" hides a person but keeps their history and card; they come back if they write again.
 - **Reminders** — tell the bot "remind me tomorrow at 10 to call the bank"; `/reminders` lists them.
   Stored on disk, so they survive restarts; so do pending drafts and calendar proposals.
 - **Automatic memory reset**: when the Claude Code context grows (~120k tokens by default), the bot restarts

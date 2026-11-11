@@ -2,8 +2,20 @@
 #  • сам — через 20 секунд после входа в Windows;
 #  • по Alt+Win+F5 — в любой момент (если окно ещё не открыто).
 # Работает в фоне; запускается при входе в Windows (ярлык в папке «Автозагрузка»).
+param([switch]$Detached)
 
 $ErrorActionPreference = 'Stop'
+
+# Запускаемся заново «отдельно» (через WMI), чтобы программа не закрывалась
+# вместе с окном или терминалом, из которого её запустили.
+if (-not $Detached) {
+    try {
+        $cmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Detached"
+        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd }
+        if ($r.ReturnValue -eq 0) { exit }
+    } catch {}
+    # Не получилось — просто работаем в этом процессе.
+}
 
 $ClaudeExe  = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
 $WorkDir    = Join-Path $env:USERPROFILE 'claude-telegram'

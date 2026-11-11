@@ -38,6 +38,8 @@ you answer people: it replies on its own to simple small talk and asks you to ap
   The bot answers comments under posts (simple ones itself, the rest as drafts for the owner, with an
   "ignore this person" button), and on the owner's request ("publish to the channel: …") prepares a post that
   goes out only after the "✅ Publish" button. Channels the bot was added to by anyone else are left immediately.
+- **News digest** (`/news`): once a day the bot reads new posts of public channels via their web preview
+  `t.me/s/<channel>` (no need to join), and Claude sends a short summary without ads and duplicates.
 - **`/stats` command** — tokens used by the bot's session today, over 7 days and per day.
   Read from Claude Code transcripts and accumulated in `usage-stats.json` / `usage-stats.csv`
   (kept even after Claude Code deletes old transcripts). Default launch folder is `~/claude-telegram`;

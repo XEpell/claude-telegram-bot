@@ -34,3 +34,4 @@ channels.json
 pending-channels.json
 .venv/
 models/
+news.json

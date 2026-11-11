@@ -30,6 +30,9 @@ you answer people: it replies on its own to simple small talk and asks you to ap
 - **Automatic memory reset**: when the Claude Code context grows (~120k tokens by default), the bot restarts
   the session at a quiet moment (`hotkey/run-bot.ps1`), so each message doesn't drag the whole past along.
   Threshold: `memoryResetTokens` in `business-settings.json` (0 = off).
+- **Voice and video-note transcription** — local Whisper model (`whisper/install.ps1`), audio never leaves
+  the computer. The bot understands contacts' voice messages (also in channel comments), and the owner can
+  give the bot commands by voice.
 - **Owner's channels** (`/channels`): add the bot as an admin of your channel and of its comment chat.
   The bot answers comments under posts (simple ones itself, the rest as drafts for the owner, with an
   "ignore this person" button), and on the owner's request ("publish to the channel: …") prepares a post that
@@ -55,7 +58,6 @@ Especially useful:
 - **security review** — the bot reads private chats, so any hole matters;
 - autostart for **macOS / Linux** (Windows only for now);
 - **tests** for the server logic (limits, history, drafts);
-- **voice message** transcription;
 - an easier way to re-apply the patch to **new plugin versions**.
 
 > The code was written together with Claude (Claude Code). There are no automated tests yet — it has been checked by hand on one account.

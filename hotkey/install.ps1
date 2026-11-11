@@ -3,8 +3,10 @@
 # Удалить: удалите ярлык «Claude Code hotkey (Alt+Win+F5)» из shell:startup.
 
 $ps1 = Join-Path $PSScriptRoot 'claude-hotkey.ps1'
-$psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$psArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ps1`""
+# conhost --headless: без окна, даже если терминал по умолчанию — Windows Terminal
+# (он игнорирует -WindowStyle Hidden и показывает пустое окно).
+$psExe = Join-Path $env:WINDIR 'System32\conhost.exe'
+$psArgs = "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ps1`""
 
 $startup = [Environment]::GetFolderPath('Startup')
 $lnk = Join-Path $startup 'Claude Code hotkey (Alt+Win+F5).lnk'

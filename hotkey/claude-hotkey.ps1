@@ -1,16 +1,17 @@
 ﻿# Открывает Claude Code с Telegram в новом окне PowerShell:
-#  • сам — через 20 секунд после входа в Windows;
+#  • сам — через 5 секунд после входа в Windows;
 #  • по Alt+Win+F5 — в любой момент (если окно ещё не открыто).
-# Работает в фоне; запускается при входе в Windows (ярлык в папке «Автозагрузка»).
+# Работает в фоне без окна; запускается при входе в Windows (ярлык в папке «Автозагрузка»).
 param([switch]$Detached)
 
 $ErrorActionPreference = 'Stop'
 
-# Запускаемся заново «отдельно» (через WMI), чтобы программа не закрывалась
-# вместе с окном или терминалом, из которого её запустили.
+# Запускаемся заново «отдельно» (через WMI) и БЕЗ окна (conhost --headless):
+# Windows Terminal игнорирует -WindowStyle Hidden и показывает пустое окно,
+# закрыв которое, пользователь убивал и горячую клавишу.
 if (-not $Detached) {
     try {
-        $cmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Detached"
+        $cmd = "conhost.exe --headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Detached"
         $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd }
         if ($r.ReturnValue -eq 0) { exit }
     } catch {}
@@ -76,7 +77,7 @@ function Show-Note([string]$text) {
 
 # Через сколько секунд после входа в Windows открыть бота сам
 # (время на подключение интернета и VPN). 0 — не открывать автоматически.
-$AutoStartDelaySec = 20
+$AutoStartDelaySec = 5
 
 # Открывает окно Claude Code с Telegram. $quiet — не показывать окно
 # «уже запущен» (для автозапуска).
@@ -98,7 +99,7 @@ function Start-ClaudeBot([bool]$quiet) {
         # run-bot.ps1 перезапускает Claude Code, когда бот очищает память сессии.
         $runBot = Join-Path $PSScriptRoot 'run-bot.ps1'
         Start-Process powershell.exe -WorkingDirectory $WorkDir -ArgumentList @(
-            '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', "`"$runBot`"",
+            '-ExecutionPolicy', 'Bypass', '-File', "`"$runBot`"",
             '-WorkDir', "`"$WorkDir`"", '-ClaudeExe', "`"$ClaudeExe`"")
     } catch {
         Show-Note "Не удалось запустить Claude Code: $_"

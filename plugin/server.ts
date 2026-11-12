@@ -2234,6 +2234,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
             const sent = await bot.api.sendMessage(chat_id, chunks[i], {
               ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
               ...(parseMode ? { parse_mode: parseMode } : {}),
+              // [custom] Re-attach the owner's mode button: Telegram hides it after
+              // force-reply prompts or when the keyboard is collapsed on the phone.
+              ...(i === chunks.length - 1 && access.allowFrom.includes(chat_id) ? { reply_markup: modeKeyboard() } : {}),
             })
             sentIds.push(sent.message_id)
           }
@@ -2962,6 +2965,18 @@ bot.command('reminders', async ctx => {
   if (!gated || !gated.access.allowFrom.includes(gated.senderId)) return
   const { text, kb } = remindersView()
   await ctx.reply(text, { reply_markup: kb })
+})
+
+// [custom] /mode — shows the current mode and brings the mode button back.
+bot.command('mode', async ctx => {
+  const gated = dmCommandGate(ctx)
+  if (!gated || !gated.access.allowFrom.includes(gated.senderId)) return
+  await ctx.reply(
+    botPaused()
+      ? '⏸ Сейчас бот на паузе: в личных чатах видит сообщения, но не отвечает и не присылает черновики.\nКнопка внизу включает его.'
+      : '🟢 Сейчас бот активен.\nКнопка внизу ставит его на паузу.',
+    { reply_markup: modeKeyboard() },
+  )
 })
 
 bot.command('contacts', async ctx => {
@@ -4440,6 +4455,7 @@ async function pollLoop(): Promise<void> {
             [
               { command: 'contacts', description: 'Собеседники: разрешённые и запрещённые' },
               { command: 'circles', description: 'Круги общения и стили' },
+              { command: 'mode', description: 'Режим: активен / пауза (вернуть кнопку)' },
               { command: 'reminders', description: 'Напоминания' },
               { command: 'channels', description: 'Каналы: комментарии и публикация постов' },
               { command: 'news', description: 'Сводка новостей из чужих каналов' },

@@ -125,7 +125,7 @@
  
  // Telegram caps messages at 4096 chars. Split long replies, preferring
  // paragraph boundaries when chunkMode is 'newline'.
-@@ -384,8 +453,1493 @@
+@@ -384,8 +453,1500 @@
    return out
  }
  
@@ -400,11 +400,18 @@
 +// Priority when they disagree: card > circle > general style.
 +// ---------------------------------------------------------------------------
 +
-+type Circle = { name: string; emoji: string; style: string; manual?: boolean; at?: number; hidden?: boolean } // hidden: kept and used for style, but not shown in the bot
++// hidden: kept and used for reply style, but not shown in the bot's screens.
++// pcOnly: a hidden circle that can be brought back only by editing the file on
++// the computer — it never appears in /hidden.
++type Circle = { name: string; emoji: string; style: string; manual?: boolean; at?: number; hidden?: boolean; pcOnly?: boolean }
++type DeletedCircle = Circle & { deletedAt: number; members: string[] }
 +type CirclesStore = {
 +  circles: Record<string, Circle>
 +  ownerStyle: { text: string; manual?: boolean; at?: number }
++  deleted?: Record<string, DeletedCircle> // soft-deleted circles, restorable from /hidden
 +}
++const MAX_CIRCLES = 12
++const CIRCLE_EMOJIS = ['⭐', '🔥', '⚽', '🎮', '🎵', '🎓', '💻', '🏠', '✈️', '🍕', '💪', '🎨', '📈', '🐾', '❤️', '🤝']
 +const CIRCLES_FILE = join(STATE_DIR, 'business-circles.json')
 +const PROFILE_MAX = { contact: 400, circle: 400, owner: 500, channel: 400 } as const
 +
@@ -1619,7 +1626,7 @@
  const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
  
  const mcp = new Server(
-@@ -404,15 +1958,17 @@
+@@ -404,15 +1965,17 @@
        },
      },
      instructions: [
@@ -1643,7 +1650,7 @@
      ].join('\n'),
    },
  )
-@@ -522,6 +2078,131 @@
+@@ -522,6 +2085,131 @@
          required: ['chat_id', 'message_id', 'text'],
        },
      },
@@ -1775,7 +1782,7 @@
    ],
  }))
  
-@@ -563,6 +2244,9 @@
+@@ -563,6 +2251,9 @@
              const sent = await bot.api.sendMessage(chat_id, chunks[i], {
                ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
                ...(parseMode ? { parse_mode: parseMode } : {}),
@@ -1785,7 +1792,7 @@
              })
              sentIds.push(sent.message_id)
            }
-@@ -634,6 +2318,327 @@
+@@ -634,6 +2325,327 @@
          const id = typeof edited === 'object' ? edited.message_id : args.message_id
          return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
        }
@@ -2113,7 +2120,7 @@
        default:
          return {
            content: [{ type: 'text', text: `unknown tool: ${req.params.name}` }],
-@@ -658,14 +2663,37 @@
+@@ -658,14 +2670,37 @@
  function shutdown(): void {
    if (shuttingDown) return
    shuttingDown = true
@@ -2154,7 +2161,7 @@
  }
  process.stdin.on('end', shutdown)
  process.stdin.on('close', shutdown)
-@@ -732,11 +2760,1086 @@
+@@ -732,11 +2767,1236 @@
    await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
  })
  
@@ -2275,9 +2282,89 @@
 +    kb.text(`${c.emoji} ${c.name}`, `cr:open:${cid}`)
 +    if (++n % 3 === 0) nextRow(kb)
 +  }
++  nextRow(kb).text('➕ Новый круг', 'cr:new')
 +  nextRow(kb).text('🗣 Мой стиль', 'ow:open').text('👥 Собеседники', 'bizl:refresh:0')
 +  return { text, kb }
 +}
++
++// [custom] Emoji picker for a circle (after creating it or via "😀 Значок").
++function emojiPickerView(cid: string): { text: string; kb: InlineKeyboard } | null {
++  const c = readCircles().circles[cid]
++  if (!c || c.hidden) return null
++  const kb = new InlineKeyboard()
++  CIRCLE_EMOJIS.forEach((e, i) => { kb.text(e, `cr:emo:${cid}:${i}`); if (i % 8 === 7) kb.row() })
++  nextRow(kb).text('✍️ Свой эмодзи', `cr:emoc:${cid}`).text('⬅️ Готово', `cr:open:${cid}`)
++  return { text: `${c.emoji} ${c.name}\n\nВыберите значок круга или пришлите свой эмодзи.`, kb }
++}
++
++// Owner replied with a new circle name / name / emoji.
++function applyCircleEdit(t: { kind: string; id: string }, raw: string): { text: string; kb?: InlineKeyboard } {
++  const cs = readCircles()
++  const text = raw.replace(/[<>\r\n]/g, ' ').replace(/\s+/g, ' ').trim()
++  if (t.kind === 'circleemoji') {
++    const c = cs.circles[t.id]
++    if (!c || c.hidden) return { text: 'Круг не найден.' }
++    if (!/\p{Extended_Pictographic}/u.test(text) || [...text].length > 4) return { text: 'Пришлите один эмодзи, например 🏀' }
++    c.emoji = text
++    saveCircles(cs)
++    return { text: `✅ Значок изменён: ${c.emoji} ${c.name}`, kb: circleView(t.id)?.kb }
++  }
++  if (!text || text.length > 24) return { text: 'Название должно быть от 1 до 24 символов.' }
++  const taken = Object.entries(cs.circles).some(([id, c]) => id !== t.id && c.name.toLowerCase() === text.toLowerCase())
++  if (taken) return { text: `Круг «${text}» уже есть.` }
++  if (t.kind === 'circlename') {
++    const c = cs.circles[t.id]
++    if (!c || c.hidden) return { text: 'Круг не найден.' }
++    c.name = text
++    saveCircles(cs)
++    return { text: `✅ Круг переименован: ${c.emoji} ${c.name}`, kb: circleView(t.id)?.kb }
++  }
++  // circlenew
++  if (Object.keys(cs.circles).length >= MAX_CIRCLES) return { text: `Кругов уже ${MAX_CIRCLES} — это максимум. Удалите или объедините лишние.` }
++  const id = 'c' + randomBytes(3).toString('hex')
++  cs.circles[id] = { name: text, emoji: '⭕', style: '' }
++  saveCircles(cs)
++  const picker = emojiPickerView(id)!
++  return {
++    text: `✅ Круг «${text}» создан.\nСтиль бот составит сам, когда в круге появятся люди с карточками, — или напишите его в карточке круга (✏️ Стиль).\nДобавить людей: /contacts → человек → круг.\n\nТеперь выберите значок:`,
++    kb: picker.kb,
++  }
++}
++
++function deleteConfirmView(cid: string): { text: string; kb: InlineKeyboard } | null {
++  const c = readCircles().circles[cid]
++  if (!c || c.hidden) return null
++  const n = Object.values(readContacts()).filter(x => x.circles?.includes(cid)).length
++  return {
++    text: `🗑 Удалить круг ${c.emoji} «${c.name}»?\n\nЛюди (${n}) останутся в списке, с них просто снимется этот круг. Их карточки и история не трогаются. ` +
++      `Сам круг со стилем и списком людей уйдёт в архив — вернуть его можно командой /hidden.`,
++    kb: new InlineKeyboard().text('🗑 Да, удалить', `cr:delok:${cid}`).text('⬅️ Нет', `cr:open:${cid}`),
++  }
++}
++
++// /hidden — hidden and deleted circles (not in the menu). pcOnly circles never show here.
++function hiddenView(): { text: string; kb: InlineKeyboard } {
++  const cs = readCircles()
++  const hidden = Object.entries(cs.circles).filter(([, c]) => c.hidden && !c.pcOnly)
++  const deleted = Object.entries(cs.deleted ?? {}).sort((a, b) => b[1].deletedAt - a[1].deletedAt)
++  const kb = new InlineKeyboard()
++  for (const [id, c] of hidden) kb.text(`👁 Показать ${c.emoji} ${clip(c.name, 18)}`, `cr:show:${id}`).row()
++  for (const [id, c] of deleted.slice(0, 20)) kb.text(`↩️ Восстановить ${c.emoji} ${clip(c.name, 16)}`, `cr:undel:${id}`).row()
++  kb.text('⬅️ К кругам', 'cr:list')
++  const text =
++    `🙈 Скрытые круги (${hidden.length}):\n` +
++    (hidden.length ? hidden.map(([, c]) => `• ${c.emoji} ${c.name} — работает, но не виден`).join('\n') : '— нет') +
++    `\n\n🗑 Удалённые (${deleted.length}):\n` +
++    (deleted.length ? deleted.map(([, c]) => `• ${c.emoji} ${c.name} — удалён ${new Date(c.deletedAt).toLocaleDateString('ru-RU')}, людей было ${c.members.length}`).join('\n') : '— нет')
++  return { text: clip(text, 4000), kb }
++}
++
++bot.command('hidden', async ctx => {
++  const gated = dmCommandGate(ctx)
++  if (!gated || !gated.access.allowFrom.includes(gated.senderId)) return
++  const { text, kb } = hiddenView()
++  await ctx.reply(text, { reply_markup: kb })
++})
 +
 +function circleView(cid: string): { text: string; kb: InlineKeyboard } | null {
 +  const c = readCircles().circles[cid]
@@ -2292,7 +2379,9 @@
 +  )
 +  const kb = new InlineKeyboard()
 +  for (const [id, x] of members.slice(0, 40)) kb.text(`👤 ${clip(x.name, 24)}`, `ct:open:${id}`).row()
-+  kb.text('✏️ Изменить стиль', `cr:edit:${cid}`).text('🔄 Пересоставить', `cr:redo:${cid}`)
++  kb.text('✏️ Стиль', `cr:edit:${cid}`).text('🔄 Пересоставить стиль', `cr:redo:${cid}`)
++  nextRow(kb).text('✏️ Название', `cr:ren:${cid}`).text('😀 Значок', `cr:emo:${cid}`)
++  nextRow(kb).text('🙈 Скрыть', `cr:hide:${cid}`).text('🗑 Удалить', `cr:del:${cid}`)
 +  nextRow(kb).text('⬅️ К кругам', 'cr:list')
 +  return { text, kb }
 +}
@@ -2310,7 +2399,7 @@
 +}
 +
 +// "✏️" buttons: the bot asks for the new text as a reply to its message.
-+type EditTarget = { kind: ProfileKind | 'channel' | 'newsadd' | 'newstime'; id: string; at: number }
++type EditTarget = { kind: ProfileKind | 'channel' | 'newsadd' | 'newstime' | 'circlenew' | 'circlename' | 'circleemoji'; id: string; at: number }
 +const editPrompts = new Map<number, EditTarget>() // prompt message_id → target
 +
 +async function askForEdit(chatId: number, target: Omit<EditTarget, 'at'>, title: string, current: string, max: number): Promise<void> {
@@ -2338,7 +2427,7 @@
 +    saveChannels(store)
 +    return ch.style ? `✅ Стиль канала ${channelLabel(ch)} сохранён.` : `✅ Стиль канала ${channelLabel(ch)} сброшен.`
 +  }
-+  if (t.kind === 'newsadd' || t.kind === 'newstime') return null // handled by applyNewsEdit
++  if (t.kind === 'newsadd' || t.kind === 'newstime' || t.kind === 'circlenew' || t.kind === 'circlename' || t.kind === 'circleemoji') return null // handled in the message:text handler
 +  if (/^(авто|auto)$/i.test(text)) return requestProfileRedo(t.kind, t.id)
 +  const clean = sanitizeProfile(text, PROFILE_MAX[t.kind])
 +  if (!clean) return 'Пустой текст — ничего не изменил.'
@@ -3024,9 +3113,77 @@
 +      }
 +      if (area === 'cr') {
 +        if (act === 'list') return await show(circlesView())
++        if (act === 'new') {
++          if (Object.keys(readCircles().circles).length >= MAX_CIRCLES) return await show(null, `Кругов уже ${MAX_CIRCLES} — это максимум`)
++          await ctx.answerCallbackQuery().catch(() => {})
++          const sent = await bot.api.sendMessage(chat, '➕ Новый круг\n\nОтветьте на это сообщение названием круга (до 24 символов), например «Спорт».',
++            { reply_markup: { force_reply: true, input_field_placeholder: 'Название круга' } })
++          editPrompts.set(sent.message_id, { kind: 'circlenew', id: '', at: Date.now() })
++          return
++        }
++        // Hidden / deleted circles (from /hidden). pcOnly ones are never handled here.
++        if ((act === 'show' || act === 'undel') && a1) {
++          const cs = readCircles()
++          if (act === 'show') {
++            const c = cs.circles[a1]
++            if (!c || !c.hidden || c.pcOnly) return await show(hiddenView(), 'Круг не найден')
++            delete c.hidden
++            saveCircles(cs)
++            return await show(hiddenView(), `👁 ${c.emoji} ${c.name} снова виден`)
++          }
++          const d = cs.deleted?.[a1]
++          if (!d) return await show(hiddenView(), 'Круг не найден')
++          if (Object.keys(cs.circles).length >= MAX_CIRCLES) return await show(null, `Кругов уже ${MAX_CIRCLES} — сначала удалите лишний`)
++          const { deletedAt: _d, members, ...circleData } = d
++          cs.circles[a1] = circleData
++          delete cs.deleted![a1]
++          saveCircles(cs)
++          const contacts = readContacts()
++          for (const id of members) if (contacts[id]) contacts[id]!.circles = [...new Set([...(contacts[id]!.circles ?? []), a1])]
++          saveContacts(contacts)
++          return await show(hiddenView(), `↩️ ${d.emoji} ${d.name} восстановлен`)
++        }
 +        const circle = a1 && !readCircles().circles[a1]?.hidden ? readCircles().circles[a1] : undefined
 +        if (!a1 || !circle) return await show(circlesView(), 'Круг не найден')
 +        if (act === 'open') return await show(circleView(a1))
++        if (act === 'ren' || act === 'emoc') {
++          await ctx.answerCallbackQuery().catch(() => {})
++          const sent = await bot.api.sendMessage(chat,
++            act === 'ren'
++              ? `✏️ Ответьте на это сообщение новым названием круга «${circle.name}» (до 24 символов).`
++              : `😀 Ответьте на это сообщение одним эмодзи для круга «${circle.name}».`,
++            { reply_markup: { force_reply: true, input_field_placeholder: act === 'ren' ? 'Новое название' : '🏀' } })
++          editPrompts.set(sent.message_id, { kind: act === 'ren' ? 'circlename' : 'circleemoji', id: a1, at: Date.now() })
++          return
++        }
++        if (act === 'emo') {
++          const i = a2 != null ? Number(a2) : NaN
++          if (!isNaN(i) && CIRCLE_EMOJIS[i]) {
++            const cs = readCircles()
++            cs.circles[a1]!.emoji = CIRCLE_EMOJIS[i]!
++            saveCircles(cs)
++            return await show(circleView(a1), `Значок: ${CIRCLE_EMOJIS[i]}`)
++          }
++          return await show(emojiPickerView(a1))
++        }
++        if (act === 'hide') {
++          const cs = readCircles()
++          cs.circles[a1]!.hidden = true
++          saveCircles(cs)
++          return await show(circlesView(), `🙈 ${circle.emoji} ${circle.name} скрыт — вернуть: /hidden`)
++        }
++        if (act === 'del') return await show(deleteConfirmView(a1))
++        if (act === 'delok') {
++          const cs = readCircles()
++          const contacts = readContacts()
++          const members = Object.entries(contacts).filter(([, x]) => x.circles?.includes(a1)).map(([id]) => id)
++          for (const id of members) contacts[id]!.circles = contacts[id]!.circles!.filter(x => x !== a1)
++          saveContacts(contacts)
++          cs.deleted = { ...(cs.deleted ?? {}), [a1]: { ...cs.circles[a1]!, deletedAt: Date.now(), members } }
++          delete cs.circles[a1]
++          saveCircles(cs)
++          return await show(circlesView(), `🗑 ${circle.emoji} ${circle.name} удалён — вернуть: /hidden`)
++        }
 +        if (act === 'edit') {
 +          await ctx.answerCallbackQuery().catch(() => {})
 +          return await askForEdit(chat, { kind: 'circle', id: a1 }, `Стиль круга «${circle.name}»`, circle.style, PROFILE_MAX.circle)
@@ -3241,7 +3398,7 @@
    const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(data)
    if (!m) {
      await ctx.answerCallbackQuery().catch(() => {})
-@@ -792,6 +3895,36 @@
+@@ -792,6 +4052,42 @@
  })
  
  bot.on('message:text', async ctx => {
@@ -3264,6 +3421,12 @@
 +  if (rt && ctx.chat.type === 'private' && editPrompts.has(rt.message_id) &&
 +      loadAccess().allowFrom.includes(String(ctx.from.id))) {
 +    const t = editPrompts.get(rt.message_id)!
++    if (t.kind === 'circlenew' || t.kind === 'circlename' || t.kind === 'circleemoji') {
++      editPrompts.delete(rt.message_id)
++      const r = applyCircleEdit(t, ctx.message.text)
++      await ctx.reply(r.text, { reply_markup: r.kb ?? modeKeyboard() }).catch(() => {})
++      return
++    }
 +    if (t.kind === 'newsadd' || t.kind === 'newstime') {
 +      editPrompts.delete(rt.message_id)
 +      await ctx.reply(await applyNewsEdit(t, ctx.message.text), { reply_markup: newsView().kb }).catch(() => {})
@@ -3278,7 +3441,7 @@
    await handleInbound(ctx, ctx.message.text, undefined)
  })
  
-@@ -834,9 +3967,21 @@
+@@ -834,9 +4130,21 @@
    })
  })
  
@@ -3301,7 +3464,7 @@
    await handleInbound(ctx, text, undefined, {
      kind: 'voice',
      file_id: voice.file_id,
-@@ -872,7 +4017,7 @@
+@@ -872,7 +4180,7 @@
  
  bot.on('message:video_note', async ctx => {
    const vn = ctx.message.video_note
@@ -3310,7 +3473,7 @@
      kind: 'video_note',
      file_id: vn.file_id,
      size: vn.file_size,
-@@ -889,6 +4034,255 @@
+@@ -889,6 +4197,255 @@
    })
  })
  
@@ -3566,7 +3729,7 @@
  type AttachmentMeta = {
    kind: string
    file_id: string
-@@ -1003,22 +4397,98 @@
+@@ -1003,22 +4560,98 @@
  // returned, and polling stopped permanently while the process stayed alive
  // (MCP stdin keeps it running). Outbound tools kept working but the bot was
  // deaf to inbound messages until a full restart.
@@ -3666,7 +3829,7 @@
          },
        })
        return // bot.stop() was called — clean exit from the loop
-@@ -1027,14 +4497,10 @@
+@@ -1027,14 +4660,10 @@
        // bot.stop() mid-setup rejects with grammy's "Aborted delay" — expected, not an error.
        if (err instanceof Error && err.message === 'Aborted delay') return
        const is409 = err instanceof GrammyError && err.error_code === 409
@@ -3685,7 +3848,7 @@
        const detail = is409
          ? `409 Conflict${attempt === 1 ? ' — another instance is polling (zombie session, or a second Claude Code running?)' : ''}`
          : `polling error: ${err}`
-@@ -1042,4 +4508,5 @@
+@@ -1042,4 +4671,5 @@
        await new Promise(r => setTimeout(r, delay))
      }
    }

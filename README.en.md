@@ -17,6 +17,9 @@ you answer people: it replies on its own to simple small talk and asks you to ap
   (one chat at a time, when chats are quiet); the owner can view and edit them via `/circles` and `/contacts`.
   A reply uses these notes plus only the last 10 messages — no re-reading of whole histories; if the contact
   refers to something older, the bot searches that one chat.
+  Circles can be created, renamed, given an emoji, hidden and deleted with buttons right in `/circles` (up to 12).
+  Deleting is soft: the circle goes to an archive; hidden and deleted circles come back via `/hidden`.
+  A circle with `"pcOnly": true` in `business-circles.json` never shows in `/hidden` — only the computer can bring it back.
 - **Everything else** goes to the owner as a draft with "✅ Send / ❌ Don't send" buttons.
 - **New contacts**: the bot asks the owner "Allow / Deny". Until decided, at most 5 auto-replies
   (the counter resets when the owner writes themselves). Allowed contacts: no cap. Denied: ignored.

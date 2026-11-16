@@ -35,3 +35,4 @@ pending-channels.json
 .venv/
 models/
 news.json
+stop-notified

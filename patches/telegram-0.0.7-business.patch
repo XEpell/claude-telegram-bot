@@ -87,10 +87,15 @@
  
  // Last-resort safety net — without these the process dies silently on any
  // unhandled promise rejection. With them it logs and keeps serving tools.
-@@ -95,6 +142,24 @@
+@@ -94,6 +141,28 @@
+ 
  const bot = new Bot(TOKEN)
  let botUsername = ''
- 
++// [custom] Time of the last update from Telegram (any kind) — the automatic
++// memory reset waits for 30 quiet minutes. Registered first so every update counts.
++let lastActivityAt = Date.now()
++bot.use(async (_ctx, next) => { lastActivityAt = Date.now(); return next() })
++
 +// [custom] Retries on network failures and Telegram flood limits (429).
 +// Other API errors (bad request, no rights…) are thrown at once.
 +async function withRetry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
@@ -108,11 +113,10 @@
 +  }
 +  throw last
 +}
-+
+ 
  type PendingEntry = {
    senderId: string
-   chatId: string
-@@ -358,7 +423,7 @@
+@@ -358,7 +427,7 @@
    }
  }
  
@@ -121,7 +125,7 @@
  
  // Telegram caps messages at 4096 chars. Split long replies, preferring
  // paragraph boundaries when chunkMode is 'newline'.
-@@ -384,8 +449,1487 @@
+@@ -384,8 +453,1493 @@
    return out
  }
  
@@ -396,7 +400,7 @@
 +// Priority when they disagree: card > circle > general style.
 +// ---------------------------------------------------------------------------
 +
-+type Circle = { name: string; emoji: string; style: string; manual?: boolean; at?: number }
++type Circle = { name: string; emoji: string; style: string; manual?: boolean; at?: number; hidden?: boolean } // hidden: kept and used for style, but not shown in the bot
 +type CirclesStore = {
 +  circles: Record<string, Circle>
 +  ownerStyle: { text: string; manual?: boolean; at?: number }
@@ -460,6 +464,12 @@
 +function circleLabel(id: string, cs = readCircles()): string {
 +  const c = cs.circles[id]
 +  return c ? `${c.emoji} ${c.name}` : id
++}
++
++// Circles shown in the bot's screens and buttons ("hidden": true ones are
++// left out, but still used for reply style and kept with all their data).
++function visibleCircles(cs: CirclesStore): [string, Circle][] {
++  return Object.entries(cs.circles).filter(([, c]) => !c.hidden)
 +}
 +
 +// Style notes for a reply to this contact (empty if nothing is known yet).
@@ -1609,7 +1619,7 @@
  const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
  
  const mcp = new Server(
-@@ -404,15 +1948,17 @@
+@@ -404,15 +1958,17 @@
        },
      },
      instructions: [
@@ -1633,7 +1643,7 @@
      ].join('\n'),
    },
  )
-@@ -522,6 +2068,131 @@
+@@ -522,6 +2078,131 @@
          required: ['chat_id', 'message_id', 'text'],
        },
      },
@@ -1765,7 +1775,7 @@
    ],
  }))
  
-@@ -563,6 +2234,9 @@
+@@ -563,6 +2244,9 @@
              const sent = await bot.api.sendMessage(chat_id, chunks[i], {
                ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
                ...(parseMode ? { parse_mode: parseMode } : {}),
@@ -1775,7 +1785,7 @@
              })
              sentIds.push(sent.message_id)
            }
-@@ -634,6 +2308,327 @@
+@@ -634,6 +2318,327 @@
          const id = typeof edited === 'object' ? edited.message_id : args.message_id
          return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
        }
@@ -2103,7 +2113,7 @@
        default:
          return {
            content: [{ type: 'text', text: `unknown tool: ${req.params.name}` }],
-@@ -658,14 +2653,32 @@
+@@ -658,14 +2663,37 @@
  function shutdown(): void {
    if (shuttingDown) return
    shuttingDown = true
@@ -2120,7 +2130,12 @@
 +  setTimeout(() => process.exit(0), 3000)
 +  // [custom] Best-effort "stopped" notice (skipped if it takes over 1.2s).
 +  const notice = startedNotified && !plannedRestart
-+    ? Promise.race([notifyOwners(`🔴 Бот остановлен: ${nowLabel()}.\nСообщения в личных чатах сейчас не обрабатываются.`), new Promise(r => setTimeout(r, 1200))])
++    ? Promise.race([
++        notifyOwners(`🔴 Бот остановлен: ${nowLabel()}.\nСообщения в личных чатах сейчас не обрабатываются.`)
++          // Tell the hotkey listener the notice went out, so it doesn't send a second one.
++          .then(() => { try { writeFileSync(join(STATE_DIR, 'stop-notified'), String(Date.now())) } catch {} }),
++        new Promise(r => setTimeout(r, 1200)),
++      ])
 +    : Promise.resolve()
 +  void notice.finally(() => Promise.resolve(bot.stop()).finally(() => process.exit(0)))
 +}
@@ -2139,7 +2154,7 @@
  }
  process.stdin.on('end', shutdown)
  process.stdin.on('close', shutdown)
-@@ -732,11 +2745,1080 @@
+@@ -732,11 +2760,1086 @@
    await ctx.reply(`Not paired. Send me a message to get a pairing code.`)
  })
  
@@ -2154,7 +2169,7 @@
 +  const archivedCount = Object.values(cs).filter(c => c.archived).length
 +
 +  const circ = readCircles()
-+  const tags = (c: ContactEntry) => (c.circles ?? []).map(id => circ.circles[id]?.emoji).filter(Boolean).join('')
++  const tags = (c: ContactEntry) => (c.circles ?? []).map(id => (circ.circles[id]?.hidden ? "" : circ.circles[id]?.emoji)).filter(Boolean).join('')
 +  const section = (title: string, list: [string, ContactEntry][], extra?: (c: ContactEntry) => string) =>
 +    `${title} (${list.length}):\n` +
 +    (list.length ? list.map(([, c]) => `• ${label(c)}${tags(c) ? ' ' + tags(c) : ''}${extra ? extra(c) : ''}`).join('\n') : '— нет')
@@ -2211,7 +2226,7 @@
 +  if (!c) return null
 +  const circ = readCircles()
 +  const statusText = { allowed: '✅ разрешён — без лимита', pending: '⏳ ждёт решения', denied: '❌ запрещён — бот не отвечает' }[c.status]
-+  const inCircles = (c.circles ?? []).filter(cid => circ.circles[cid])
++  const inCircles = (c.circles ?? []).filter(cid => circ.circles[cid] && !circ.circles[cid]!.hidden)
 +  const text = clip(
 +    `👤 ${c.name}${c.username ? ` (@${c.username})` : ''}\n` +
 +    (c.archived ? `📦 В архиве${c.archivedAt ? ` с ${new Date(c.archivedAt).toLocaleDateString('ru-RU')}` : ''}\n` : '') +
@@ -2227,7 +2242,7 @@
 +  )
 +  const kb = new InlineKeyboard()
 +  let n = 0
-+  for (const [cid, cc] of Object.entries(circ.circles)) {
++  for (const [cid, cc] of visibleCircles(circ)) {
 +    kb.text(`${inCircles.includes(cid) ? '☑️' : '⬜'} ${cc.emoji} ${cc.name}`, `ct:cir:${id}:${cid}`)
 +    if (++n % 3 === 0) nextRow(kb)
 +  }
@@ -2244,7 +2259,7 @@
 +function circlesView(): { text: string; kb: InlineKeyboard } {
 +  const circ = readCircles()
 +  const contacts = Object.values(readContacts())
-+  const lines = Object.entries(circ.circles).map(([cid, c]) => {
++  const lines = visibleCircles(circ).map(([cid, c]) => {
 +    const n = contacts.filter(x => x.status !== 'denied' && !x.archived && x.circles?.includes(cid)).length
 +    return `${c.emoji} ${c.name} — ${n} чел.\n   ${clip(c.style || 'стиль ещё не описан', 140)}`
 +  })
@@ -2256,7 +2271,7 @@
 +  )
 +  const kb = new InlineKeyboard()
 +  let n = 0
-+  for (const [cid, c] of Object.entries(circ.circles)) {
++  for (const [cid, c] of visibleCircles(circ)) {
 +    kb.text(`${c.emoji} ${c.name}`, `cr:open:${cid}`)
 +    if (++n % 3 === 0) nextRow(kb)
 +  }
@@ -2266,7 +2281,7 @@
 +
 +function circleView(cid: string): { text: string; kb: InlineKeyboard } | null {
 +  const c = readCircles().circles[cid]
-+  if (!c) return null
++  if (!c || c.hidden) return null
 +  const members = Object.entries(readContacts()).filter(([, x]) => x.status !== 'denied' && !x.archived && x.circles?.includes(cid))
 +  const text = clip(
 +    `${c.emoji} ${c.name}\n\n` +
@@ -2553,7 +2568,7 @@
 +  const now = s ? `сейчас ${fmtTok(s.tokens)} токенов` : 'размер пока неизвестен'
 +  if (!relaunchable) return `🧠 Память сессии: ${now}. Автоочистка выключена (бот запущен не через Alt+Win+F5 / автозапуск).`
 +  if (!limit) return `🧠 Память сессии: ${now}. Автоочистка выключена в настройках.`
-+  return `🧠 Память сессии: ${now}; очистится сама при ~${fmtTok(limit)} в спокойный момент.`
++  return `🧠 Память сессии: ${now}; очистится сама, когда будет больше ~${fmtTok(limit)} и 30 минут подряд ничего не происходит.`
 +}
 +
 +bot.command('stats', async ctx => {
@@ -2733,13 +2748,19 @@
 +  return null
 +}
 +
++// [custom] The automatic reset waits for 30 minutes of complete quiet: no
++// update from Telegram at all (owner's messages and buttons, contacts,
++// comments) and no work in the Claude session.
++const RESET_QUIET_MS = 30 * 60_000
++
 +function checkMemory(): void {
 +  if (!POLL || !relaunchable || plannedRestart || shuttingDown) return
 +  const limit = memoryResetTokens()
 +  if (!limit || Date.now() - STARTED_AT < 15 * 60_000) return
 +  const ctxInfo = sessionContext()
 +  if (!ctxInfo || ctxInfo.tokens < limit) return
-+  if (ctxInfo.idleMs < 90_000 || restartBlocker()) return // wait for a quiet moment
++  if (Date.now() - lastActivityAt < RESET_QUIET_MS || ctxInfo.idleMs < RESET_QUIET_MS) return
++  if (restartBlocker()) return
 +  void planRestart(ctxInfo.tokens).then(err => {
 +    if (err) process.stderr.write(`telegram channel: memory reset failed: ${err}\n`)
 +  })
@@ -2982,7 +3003,7 @@
 +          saveContacts(contacts)
 +          return await show(contactView(a1), `↩️ ${c.name} снова в списке`)
 +        }
-+        if (act === 'cir' && a2 && readCircles().circles[a2]) {
++        if (act === 'cir' && a2 && readCircles().circles[a2] && !readCircles().circles[a2]!.hidden) {
 +          const set = new Set(c.circles ?? [])
 +          const had = set.has(a2)
 +          had ? set.delete(a2) : set.add(a2)
@@ -3003,7 +3024,7 @@
 +      }
 +      if (area === 'cr') {
 +        if (act === 'list') return await show(circlesView())
-+        const circle = a1 ? readCircles().circles[a1] : undefined
++        const circle = a1 && !readCircles().circles[a1]?.hidden ? readCircles().circles[a1] : undefined
 +        if (!a1 || !circle) return await show(circlesView(), 'Круг не найден')
 +        if (act === 'open') return await show(circleView(a1))
 +        if (act === 'edit') {
@@ -3220,7 +3241,7 @@
    const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(data)
    if (!m) {
      await ctx.answerCallbackQuery().catch(() => {})
-@@ -792,6 +3874,36 @@
+@@ -792,6 +3895,36 @@
  })
  
  bot.on('message:text', async ctx => {
@@ -3257,7 +3278,7 @@
    await handleInbound(ctx, ctx.message.text, undefined)
  })
  
-@@ -834,9 +3946,21 @@
+@@ -834,9 +3967,21 @@
    })
  })
  
@@ -3280,7 +3301,7 @@
    await handleInbound(ctx, text, undefined, {
      kind: 'voice',
      file_id: voice.file_id,
-@@ -872,7 +3996,7 @@
+@@ -872,7 +4017,7 @@
  
  bot.on('message:video_note', async ctx => {
    const vn = ctx.message.video_note
@@ -3289,7 +3310,7 @@
      kind: 'video_note',
      file_id: vn.file_id,
      size: vn.file_size,
-@@ -889,6 +4013,255 @@
+@@ -889,6 +4034,255 @@
    })
  })
  
@@ -3379,7 +3400,7 @@
 +  if (entry.status === 'pending' && (!entry.askedAt || Date.now() - entry.askedAt > BIZ_TTL_MS)) {
 +    const who = contactUsername ? `${contactName} (@${contactUsername})` : contactName
 +    const kb = new InlineKeyboard()
-+    Object.entries(readCircles().circles).slice(0, 9).forEach(([cid, c], i) => {
++    visibleCircles(readCircles()).slice(0, 9).forEach(([cid, c], i) => {
 +      kb.text(`✅ ${c.emoji} ${c.name}`, `bizc:allow:${chatId}:${cid}`)
 +      if (i % 3 === 2) kb.row() // three circles per row
 +    })
@@ -3545,7 +3566,7 @@
  type AttachmentMeta = {
    kind: string
    file_id: string
-@@ -1003,22 +4376,98 @@
+@@ -1003,22 +4397,98 @@
  // returned, and polling stopped permanently while the process stayed alive
  // (MCP stdin keeps it running). Outbound tools kept working but the bot was
  // deaf to inbound messages until a full restart.
@@ -3645,7 +3666,7 @@
          },
        })
        return // bot.stop() was called — clean exit from the loop
-@@ -1027,14 +4476,10 @@
+@@ -1027,14 +4497,10 @@
        // bot.stop() mid-setup rejects with grammy's "Aborted delay" — expected, not an error.
        if (err instanceof Error && err.message === 'Aborted delay') return
        const is409 = err instanceof GrammyError && err.error_code === 409
@@ -3664,7 +3685,7 @@
        const detail = is409
          ? `409 Conflict${attempt === 1 ? ' — another instance is polling (zombie session, or a second Claude Code running?)' : ''}`
          : `polling error: ${err}`
-@@ -1042,4 +4487,5 @@
+@@ -1042,4 +4508,5 @@
        await new Promise(r => setTimeout(r, delay))
      }
    }

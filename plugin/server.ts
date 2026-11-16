@@ -141,6 +141,10 @@ const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 const bot = new Bot(TOKEN)
 let botUsername = ''
+// [custom] Time of the last update from Telegram (any kind) — the automatic
+// memory reset waits for 30 quiet minutes. Registered first so every update counts.
+let lastActivityAt = Date.now()
+bot.use(async (_ctx, next) => { lastActivityAt = Date.now(); return next() })
 
 // [custom] Retries on network failures and Telegram flood limits (429).
 // Other API errors (bad request, no rights…) are thrown at once.
@@ -720,7 +724,7 @@ function saveContacts(c: Record<string, ContactEntry>): void {
 // Priority when they disagree: card > circle > general style.
 // ---------------------------------------------------------------------------
 
-type Circle = { name: string; emoji: string; style: string; manual?: boolean; at?: number }
+type Circle = { name: string; emoji: string; style: string; manual?: boolean; at?: number; hidden?: boolean } // hidden: kept and used for style, but not shown in the bot
 type CirclesStore = {
   circles: Record<string, Circle>
   ownerStyle: { text: string; manual?: boolean; at?: number }
@@ -784,6 +788,12 @@ function sanitizeProfile(s: string, max: number): string {
 function circleLabel(id: string, cs = readCircles()): string {
   const c = cs.circles[id]
   return c ? `${c.emoji} ${c.name}` : id
+}
+
+// Circles shown in the bot's screens and buttons ("hidden": true ones are
+// left out, but still used for reply style and kept with all their data).
+function visibleCircles(cs: CirclesStore): [string, Circle][] {
+  return Object.entries(cs.circles).filter(([, c]) => !c.hidden)
 }
 
 // Style notes for a reply to this contact (empty if nothing is known yet).
@@ -2663,7 +2673,12 @@ function shutdown(): void {
   setTimeout(() => process.exit(0), 3000)
   // [custom] Best-effort "stopped" notice (skipped if it takes over 1.2s).
   const notice = startedNotified && !plannedRestart
-    ? Promise.race([notifyOwners(`🔴 Бот остановлен: ${nowLabel()}.\nСообщения в личных чатах сейчас не обрабатываются.`), new Promise(r => setTimeout(r, 1200))])
+    ? Promise.race([
+        notifyOwners(`🔴 Бот остановлен: ${nowLabel()}.\nСообщения в личных чатах сейчас не обрабатываются.`)
+          // Tell the hotkey listener the notice went out, so it doesn't send a second one.
+          .then(() => { try { writeFileSync(join(STATE_DIR, 'stop-notified'), String(Date.now())) } catch {} }),
+        new Promise(r => setTimeout(r, 1200)),
+      ])
     : Promise.resolve()
   void notice.finally(() => Promise.resolve(bot.stop()).finally(() => process.exit(0)))
 }
@@ -2756,7 +2771,7 @@ function contactsView(): { text: string; kb: InlineKeyboard } {
   const archivedCount = Object.values(cs).filter(c => c.archived).length
 
   const circ = readCircles()
-  const tags = (c: ContactEntry) => (c.circles ?? []).map(id => circ.circles[id]?.emoji).filter(Boolean).join('')
+  const tags = (c: ContactEntry) => (c.circles ?? []).map(id => (circ.circles[id]?.hidden ? "" : circ.circles[id]?.emoji)).filter(Boolean).join('')
   const section = (title: string, list: [string, ContactEntry][], extra?: (c: ContactEntry) => string) =>
     `${title} (${list.length}):\n` +
     (list.length ? list.map(([, c]) => `• ${label(c)}${tags(c) ? ' ' + tags(c) : ''}${extra ? extra(c) : ''}`).join('\n') : '— нет')
@@ -2813,7 +2828,7 @@ function contactView(id: string): { text: string; kb: InlineKeyboard } | null {
   if (!c) return null
   const circ = readCircles()
   const statusText = { allowed: '✅ разрешён — без лимита', pending: '⏳ ждёт решения', denied: '❌ запрещён — бот не отвечает' }[c.status]
-  const inCircles = (c.circles ?? []).filter(cid => circ.circles[cid])
+  const inCircles = (c.circles ?? []).filter(cid => circ.circles[cid] && !circ.circles[cid]!.hidden)
   const text = clip(
     `👤 ${c.name}${c.username ? ` (@${c.username})` : ''}\n` +
     (c.archived ? `📦 В архиве${c.archivedAt ? ` с ${new Date(c.archivedAt).toLocaleDateString('ru-RU')}` : ''}\n` : '') +
@@ -2829,7 +2844,7 @@ function contactView(id: string): { text: string; kb: InlineKeyboard } | null {
   )
   const kb = new InlineKeyboard()
   let n = 0
-  for (const [cid, cc] of Object.entries(circ.circles)) {
+  for (const [cid, cc] of visibleCircles(circ)) {
     kb.text(`${inCircles.includes(cid) ? '☑️' : '⬜'} ${cc.emoji} ${cc.name}`, `ct:cir:${id}:${cid}`)
     if (++n % 3 === 0) nextRow(kb)
   }
@@ -2846,7 +2861,7 @@ function contactView(id: string): { text: string; kb: InlineKeyboard } | null {
 function circlesView(): { text: string; kb: InlineKeyboard } {
   const circ = readCircles()
   const contacts = Object.values(readContacts())
-  const lines = Object.entries(circ.circles).map(([cid, c]) => {
+  const lines = visibleCircles(circ).map(([cid, c]) => {
     const n = contacts.filter(x => x.status !== 'denied' && !x.archived && x.circles?.includes(cid)).length
     return `${c.emoji} ${c.name} — ${n} чел.\n   ${clip(c.style || 'стиль ещё не описан', 140)}`
   })
@@ -2858,7 +2873,7 @@ function circlesView(): { text: string; kb: InlineKeyboard } {
   )
   const kb = new InlineKeyboard()
   let n = 0
-  for (const [cid, c] of Object.entries(circ.circles)) {
+  for (const [cid, c] of visibleCircles(circ)) {
     kb.text(`${c.emoji} ${c.name}`, `cr:open:${cid}`)
     if (++n % 3 === 0) nextRow(kb)
   }
@@ -2868,7 +2883,7 @@ function circlesView(): { text: string; kb: InlineKeyboard } {
 
 function circleView(cid: string): { text: string; kb: InlineKeyboard } | null {
   const c = readCircles().circles[cid]
-  if (!c) return null
+  if (!c || c.hidden) return null
   const members = Object.entries(readContacts()).filter(([, x]) => x.status !== 'denied' && !x.archived && x.circles?.includes(cid))
   const text = clip(
     `${c.emoji} ${c.name}\n\n` +
@@ -3155,7 +3170,7 @@ function memoryLine(): string {
   const now = s ? `сейчас ${fmtTok(s.tokens)} токенов` : 'размер пока неизвестен'
   if (!relaunchable) return `🧠 Память сессии: ${now}. Автоочистка выключена (бот запущен не через Alt+Win+F5 / автозапуск).`
   if (!limit) return `🧠 Память сессии: ${now}. Автоочистка выключена в настройках.`
-  return `🧠 Память сессии: ${now}; очистится сама при ~${fmtTok(limit)} в спокойный момент.`
+  return `🧠 Память сессии: ${now}; очистится сама, когда будет больше ~${fmtTok(limit)} и 30 минут подряд ничего не происходит.`
 }
 
 bot.command('stats', async ctx => {
@@ -3335,13 +3350,19 @@ async function planRestart(tokens: number): Promise<string | null> {
   return null
 }
 
+// [custom] The automatic reset waits for 30 minutes of complete quiet: no
+// update from Telegram at all (owner's messages and buttons, contacts,
+// comments) and no work in the Claude session.
+const RESET_QUIET_MS = 30 * 60_000
+
 function checkMemory(): void {
   if (!POLL || !relaunchable || plannedRestart || shuttingDown) return
   const limit = memoryResetTokens()
   if (!limit || Date.now() - STARTED_AT < 15 * 60_000) return
   const ctxInfo = sessionContext()
   if (!ctxInfo || ctxInfo.tokens < limit) return
-  if (ctxInfo.idleMs < 90_000 || restartBlocker()) return // wait for a quiet moment
+  if (Date.now() - lastActivityAt < RESET_QUIET_MS || ctxInfo.idleMs < RESET_QUIET_MS) return
+  if (restartBlocker()) return
   void planRestart(ctxInfo.tokens).then(err => {
     if (err) process.stderr.write(`telegram channel: memory reset failed: ${err}\n`)
   })
@@ -3584,7 +3605,7 @@ bot.on('callback_query:data', async ctx => {
           saveContacts(contacts)
           return await show(contactView(a1), `↩️ ${c.name} снова в списке`)
         }
-        if (act === 'cir' && a2 && readCircles().circles[a2]) {
+        if (act === 'cir' && a2 && readCircles().circles[a2] && !readCircles().circles[a2]!.hidden) {
           const set = new Set(c.circles ?? [])
           const had = set.has(a2)
           had ? set.delete(a2) : set.add(a2)
@@ -3605,7 +3626,7 @@ bot.on('callback_query:data', async ctx => {
       }
       if (area === 'cr') {
         if (act === 'list') return await show(circlesView())
-        const circle = a1 ? readCircles().circles[a1] : undefined
+        const circle = a1 && !readCircles().circles[a1]?.hidden ? readCircles().circles[a1] : undefined
         if (!a1 || !circle) return await show(circlesView(), 'Круг не найден')
         if (act === 'open') return await show(circleView(a1))
         if (act === 'edit') {
@@ -4099,7 +4120,7 @@ bot.on('business_message', async ctx => {
   if (entry.status === 'pending' && (!entry.askedAt || Date.now() - entry.askedAt > BIZ_TTL_MS)) {
     const who = contactUsername ? `${contactName} (@${contactUsername})` : contactName
     const kb = new InlineKeyboard()
-    Object.entries(readCircles().circles).slice(0, 9).forEach(([cid, c], i) => {
+    visibleCircles(readCircles()).slice(0, 9).forEach(([cid, c], i) => {
       kb.text(`✅ ${c.emoji} ${c.name}`, `bizc:allow:${chatId}:${cid}`)
       if (i % 3 === 2) kb.row() // three circles per row
     })

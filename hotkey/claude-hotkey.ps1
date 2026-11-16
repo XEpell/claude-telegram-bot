@@ -131,4 +131,44 @@ if ($AutoStartDelaySec -gt 0) {
     $autoTimer.Start()
 }
 
+# Сторож: если окно бота закрыли (крестиком, Ctrl+C или оно упало), бот сам
+# не всегда успевает написать «🔴 остановлен». Тогда это сообщение отправляет
+# эта программа. Плановая очистка памяти (бот возвращается за секунды) — не в счёт.
+$StateDir = if ($env:TELEGRAM_STATE_DIR) { $env:TELEGRAM_STATE_DIR } else { Join-Path $env:USERPROFILE '.claude\channels\telegram' }
+$script:botSeen = $false
+$script:goneSince = $null
+
+function Send-OwnerNotice([string]$text) {
+    try {
+        $token = (Get-Content (Join-Path $StateDir '.env') -ErrorAction Stop |
+            Where-Object { $_ -match '^TELEGRAM_BOT_TOKEN=' } | Select-Object -First 1) -replace '^TELEGRAM_BOT_TOKEN=', ''
+        $owners = (Get-Content (Join-Path $StateDir 'access.json') -Raw -Encoding UTF8 | ConvertFrom-Json).allowFrom
+        foreach ($id in $owners) {
+            $body = @{ chat_id = "$id"; text = $text } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Uri "https://api.telegram.org/bot$($token.Trim())/sendMessage" -Method Post `
+                -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 15 | Out-Null
+        }
+    } catch {}
+}
+
+$watchTimer = New-Object System.Windows.Forms.Timer
+$watchTimer.Interval = 5000
+$watchTimer.add_Tick({
+    try {
+        $running = @(Get-CimInstance Win32_Process -Filter "Name='claude.exe'" |
+            Where-Object { $_.CommandLine -match '--channels' }).Count -gt 0
+        if ($running) { $script:botSeen = $true; $script:goneSince = $null; return }
+        if (-not $script:botSeen) { return }
+        if (-not $script:goneSince) { $script:goneSince = Get-Date; return }
+        if (((Get-Date) - $script:goneSince).TotalSeconds -lt 20) { return }   # мог быть перезапуск
+        $script:botSeen = $false
+        $script:goneSince = $null
+        if (Test-Path (Join-Path $StateDir 'restart.request')) { return }       # плановая очистка памяти
+        $marker = Join-Path $StateDir 'stop-notified'
+        if ((Test-Path $marker) -and ((Get-Date) - (Get-Item $marker).LastWriteTime).TotalMinutes -lt 3) { return } # бот успел сам
+        Send-OwnerNotice ("🔴 Бот остановлен: окно Claude Code закрыто ({0}).`nСообщения в личных чатах сейчас не обрабатываются.`nAlt+Win+F5 — запустить снова." -f (Get-Date -Format 'dd.MM.yyyy HH:mm'))
+    } catch {}
+})
+$watchTimer.Start()
+
 [System.Windows.Forms.Application]::Run($form)
